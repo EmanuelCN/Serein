@@ -55,9 +55,12 @@ and its target is not known to be deleted. Parked attachments keep at most 8 con
 and 64 MiB of in-memory pasted bytes and thumbnails together; chosen files hold only their
 inspected metadata. The oldest conversation's files are removed first, and a selection
 larger than the whole budget is removed when leaving, each with an error notice. Files
-return only to the generation and channel they were staged in. Disconnect, a session
-change, logout or lost channel access drops them. Selections still loading and uploads in
-flight are still cancelled by navigation. Nothing here is written to disk.
+return only to the generation and channel they were staged in, alongside that conversation's
+text draft. A Gateway reconnect keeps them, like text drafts; channel access is checked again
+once connected, and lost access, a session change or logout drops them. A clipboard paste
+that finishes after the user left its conversation joins that conversation's staged files.
+Selections still loading from a file picker and uploads in flight are still cancelled by
+navigation. Nothing here is written to disk.
 
 ## Game mention catalog (October 14, 2026)
 
