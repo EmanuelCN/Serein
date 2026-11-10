@@ -752,7 +752,8 @@ impl Avatars {
 		format_type: u8,
 		_demo: bool,
 	) -> String {
-		let prefix = if self.animate_gifs && matches!(format_type, 2 | 4) {
+		// APNG (2), Lottie (3) and GIF (4) stickers animate; PNG (1) stickers are still.
+		let prefix = if self.animate_gifs && matches!(format_type, 2..=4) {
 			"anim"
 		} else {
 			"embed"

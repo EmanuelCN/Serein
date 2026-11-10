@@ -70,8 +70,10 @@ fn encoded_limit(key: &str) -> usize {
 		MAX_ENCODED
 	}
 }
+/// Lottie stickers (format 3) are fetched as JSON and rendered locally: a still frame for
+/// `embed:` keys, every frame for `anim:` keys.
 fn lottie_key(key: &str) -> bool {
-	key.starts_with("embed:sticker-") && key.ends_with("-3")
+	(key.starts_with("embed:sticker-") || key.starts_with("anim:sticker-")) && key.ends_with("-3")
 }
 fn media_encoded(rendition: &Rendition) -> usize {
 	let (width, height) = match rendition.size {
@@ -658,9 +660,7 @@ fn cdn_url(key: &str) -> Option<String> {
 		return match format {
 			"1" | "2" => Some(format!("https://cdn.discordapp.com/stickers/{id}.png")),
 			"4" => Some(format!("https://media.discordapp.net/stickers/{id}.gif")),
-			"3" if key.starts_with("embed:") => {
-				Some(format!("https://cdn.discordapp.com/stickers/{id}.json"))
-			}
+			"3" => Some(format!("https://cdn.discordapp.com/stickers/{id}.json")),
 			_ => None,
 		};
 	}
@@ -1593,7 +1593,11 @@ async fn decode_blocking(
 ) -> (Option<egui::ColorImage>, ui::GifFrames, Option<Vec<u8>>) {
 	let key = key.to_owned();
 	bounded_decode(DECODE_SLOTS.clone(), move || {
-		let Some(bytes) = (if lottie {
+		// An animated request renders the Lottie clip to an APNG, which the animation decoder
+		// below plays and the disk cache keeps; a clip with a single frame stays a still image.
+		let Some(bytes) = (if lottie && budget.frames.is_some() {
+			render_lottie_animation(&bytes).or_else(|| render_lottie(&bytes))
+		} else if lottie {
 			render_lottie(&bytes)
 		} else {
 			Some(bytes)
@@ -1647,25 +1651,27 @@ async fn decode_blocking(
 	.unwrap_or((None, Vec::new(), None))
 }
 
-/// Render one bounded static preview; the resulting PNG is what enters the disk cache.
-fn render_lottie(bytes: &[u8]) -> Option<Vec<u8>> {
+/// Parse a bounded Lottie sticker and check its canvas.
+fn parse_lottie(bytes: &[u8]) -> Option<Lottie> {
 	if bytes.len() > MAX_LOTTIE_ENCODED {
 		return None;
 	}
-	let source = std::str::from_utf8(bytes).ok()?;
-	let animation = Lottie::from_json_str(source).ok()?;
-	if animation.width == 0
-		|| animation.height == 0
-		|| animation.width > 1024
-		|| animation.height > 1024
-	{
-		return None;
-	}
+	let animation = Lottie::from_json_str(std::str::from_utf8(bytes).ok()?).ok()?;
+	(animation.width != 0
+		&& animation.height != 0
+		&& animation.width <= 1024
+		&& animation.height <= 1024)
+		.then_some(animation)
+}
+
+/// Render the Lottie frame at `time` (in Lottie frames) at sticker size, as straight-alpha
+/// RGBA with its width and height.
+fn render_lottie_frame(animation: &Lottie, time: f32) -> Option<(Vec<u8>, u32, u32)> {
 	let scale = 160.0 / animation.width.max(animation.height) as f32;
 	let frame = Renderer::default()
 		.render_frame(
-			&animation,
-			animation.in_point,
+			animation,
+			time,
 			RenderConfig::new(Rgba8::TRANSPARENT, scale),
 		)
 		.ok()?;
@@ -1680,16 +1686,70 @@ fn render_lottie(bytes: &[u8]) -> Option<Vec<u8>> {
 			}
 		}
 	}
+	Some((pixels, frame.width, frame.height))
+}
+
+/// Render one bounded static preview; the resulting PNG is what enters the disk cache.
+fn render_lottie(bytes: &[u8]) -> Option<Vec<u8>> {
+	let animation = parse_lottie(bytes)?;
+	let (pixels, width, height) = render_lottie_frame(&animation, animation.in_point)?;
 	let mut png = Vec::new();
 	image::codecs::png::PngEncoder::new(&mut png)
-		.write_image(
-			&pixels,
-			frame.width,
-			frame.height,
-			image::ExtendedColorType::Rgba8,
-		)
+		.write_image(&pixels, width, height, image::ExtendedColorType::Rgba8)
 		.ok()?;
 	(png.len() <= MAX_ENCODED).then_some(png)
+}
+
+/// Frames an animated Lottie sticker keeps; longer clips are sampled more sparsely.
+const MAX_LOTTIE_FRAMES: usize = 75;
+/// Highest frame rate rendered; Discord's Lottie stickers are authored at 30 or 60 fps.
+const MAX_LOTTIE_FPS: f32 = 30.0;
+
+/// Render a Lottie sticker's whole clip to a looping APNG, the format the animation decoder
+/// and disk cache already handle for APNG stickers. `None` for an invalid clip or one with
+/// fewer than two frames, which stays a still image.
+fn render_lottie_animation(bytes: &[u8]) -> Option<Vec<u8>> {
+	let animation = parse_lottie(bytes)?;
+	let rate = animation.frame_rate;
+	let duration = animation.duration_frames();
+	if !rate.is_finite() || rate <= 0.0 || !duration.is_finite() || duration <= 0.0 {
+		return None;
+	}
+	// Lottie frames advanced per rendered frame: at most 30 fps and `MAX_LOTTIE_FRAMES`.
+	let step = (rate / MAX_LOTTIE_FPS)
+		.max(duration / MAX_LOTTIE_FRAMES as f32)
+		.max(1.0);
+	let count = ((duration / step).ceil() as usize).min(MAX_LOTTIE_FRAMES);
+	if count < 2 {
+		return None;
+	}
+	let delay_ms = ((step / rate) * 1000.0).round().clamp(20.0, 10_000.0) as u16;
+	let first = render_lottie_frame(&animation, animation.in_point)?;
+	let (width, height) = (first.1, first.2);
+	let mut png = Vec::new();
+	{
+		let mut encoder = png::Encoder::new(&mut png, width, height);
+		encoder.set_color(png::ColorType::Rgba);
+		encoder.set_depth(png::BitDepth::Eight);
+		encoder.set_animated(count as u32, 0).ok()?;
+		let mut writer = encoder.write_header().ok()?;
+		for index in 0..count {
+			let frame = if index == 0 {
+				first.0.clone()
+			} else {
+				let (pixels, w, h) =
+					render_lottie_frame(&animation, animation.in_point + index as f32 * step)?;
+				if (w, h) != (width, height) {
+					return None;
+				}
+				pixels
+			};
+			writer.set_frame_delay(delay_ms, 1000).ok()?;
+			writer.write_image_data(&frame).ok()?;
+		}
+		writer.finish().ok()?;
+	}
+	(png.len() <= MAX_ANIMATED_ENCODED).then_some(png)
 }
 
 async fn download(
@@ -2747,12 +2807,15 @@ mod tests {
 				assert!(super::disk_key(&key).unwrap().starts_with("embed-"));
 			}
 		}
-		assert_eq!(
-			super::cdn_url("embed:sticker-7-3").as_deref(),
-			Some("https://cdn.discordapp.com/stickers/7.json")
-		);
+		// Lottie stickers are fetched as JSON whether they are shown still or animated.
+		for key in ["embed:sticker-7-3", "anim:sticker-7-3"] {
+			assert_eq!(
+				super::cdn_url(key).as_deref(),
+				Some("https://cdn.discordapp.com/stickers/7.json")
+			);
+			assert!(super::lottie_key(key));
+		}
 		for key in [
-			"anim:sticker-7-3",
 			"embed:sticker-0-1",
 			"embed:sticker-7-5",
 			"embed:sticker-7-1?x=1",
@@ -2783,6 +2846,24 @@ mod tests {
 			[160, 160]
 		);
 		assert!(super::render_lottie(&vec![b' '; super::MAX_LOTTIE_ENCODED + 1]).is_none());
+	}
+
+	/// Regression: Lottie stickers (Discord's own packs) only ever rendered their first frame.
+	#[test]
+	fn animated_lottie_stickers_render_every_frame_within_bounds() {
+		// A 2-second, 60 fps clip whose circle moves across the canvas.
+		let source = r#"{"v":"5.7.6","fr":60,"ip":0,"op":120,"w":320,"h":320,"layers":[{"ty":4,"ip":0,"op":120,"st":0,"ks":{"o":{"a":0,"k":100},"r":{"a":0,"k":0},"p":{"a":1,"k":[{"t":0,"s":[60,160],"i":{"x":[1],"y":[1]},"o":{"x":[0],"y":[0]}},{"t":120,"s":[260,160]}]},"a":{"a":0,"k":[0,0]},"s":{"a":0,"k":[100,100]}},"shapes":[{"ty":"el","p":{"a":0,"k":[0,0]},"s":{"a":0,"k":[80,80]}},{"ty":"fl","c":{"a":0,"k":[0.2,0.6,1,1]},"o":{"a":0,"k":100},"r":1}]}]}"#;
+		let apng =
+			super::render_lottie_animation(source.as_bytes()).expect("animated Lottie sticker");
+		let frames = super::decode_animation(&apng, &FrameBudget::legacy(160), |_| {}).unwrap();
+		// Rendered at 30 fps: 60 frames of about 33 ms, and the circle actually moves.
+		assert_eq!(frames.len(), 60);
+		assert!((30..=40).contains(&frames[0].0.as_millis()));
+		assert_ne!(frames[0].1.pixels(), frames[59].1.pixels());
+		// A clip with a single frame is still, not an animation.
+		let still = source.replace(r#""op":120,"w""#, r#""op":1,"w""#);
+		assert!(super::render_lottie_animation(still.as_bytes()).is_none());
+		assert!(super::render_lottie(still.as_bytes()).is_some());
 	}
 	#[test]
 	fn role_icon_urls_are_confined_to_the_role_cdn_path() {
