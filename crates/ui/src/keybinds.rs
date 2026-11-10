@@ -20,6 +20,7 @@ const MESSAGES: &[KeybindAction] = &[
 	KeybindAction::SendMessage,
 	KeybindAction::InsertNewLine,
 	KeybindAction::EditLastMessage,
+	KeybindAction::EmojiPicker,
 ];
 const FORMATTING: &[KeybindAction] = &[
 	KeybindAction::Bold,

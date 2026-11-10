@@ -425,6 +425,8 @@ pub(crate) struct Picker {
 	frequent: Vec<(Used, u32)>,
 	open: bool,
 	pending_open: bool,
+	/// The Emoji Picker keybind was pressed; applied on the next `show`, like a trigger click.
+	pending_toggle: bool,
 	focus: bool,
 	channel: Option<Id>,
 	generation: u64,
@@ -453,6 +455,7 @@ impl Default for Picker {
 			frequent: Vec::with_capacity(32),
 			open: false,
 			pending_open: false,
+			pending_toggle: false,
 			focus: false,
 			channel: None,
 			generation: 0,
@@ -608,6 +611,11 @@ impl Picker {
 				GifSection::Home
 			}
 		};
+	}
+	/// Open the emoji tab, or close the picker when it already shows it, as the composer's
+	/// emoji button does.
+	pub(crate) fn toggle_emoji(&mut self) {
+		self.pending_toggle = true;
 	}
 	pub(crate) fn open_stickers(&mut self, sticker: Option<&model::Sticker>) {
 		self.pending_open = true;
@@ -1025,6 +1033,15 @@ impl Picker {
 			self.focus = true;
 		}
 		let was_open = self.open;
+		if std::mem::take(&mut self.pending_toggle) {
+			if self.open && self.tab == Tab::Emoji {
+				self.open = false;
+			} else {
+				self.open = true;
+				self.tab = Tab::Emoji;
+				self.focus = true;
+			}
+		}
 		// Rightmost first: the composer lays these out right-to-left like Discord's tray.
 		let trigger = crate::icons::toggle(
 			ui,
