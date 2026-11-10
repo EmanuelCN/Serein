@@ -305,7 +305,8 @@ impl Avatars {
 		};
 		if bytes > ANIMATION_BYTES
 			|| frames.iter().any(|(delay, image)| {
-				*delay < Duration::from_millis(20)
+				// 60 fps; slower GIF delays are already raised by the decoder.
+				*delay < Duration::from_millis(16)
 					|| image.resolution()[0] > edge
 					|| image.resolution()[1] > edge
 			}) {
@@ -751,8 +752,11 @@ impl Avatars {
 		id: model::Id,
 		format_type: u8,
 		_demo: bool,
+		animate: bool,
 	) -> String {
-		let prefix = if self.animate_gifs && matches!(format_type, 2 | 4) {
+		// APNG (2), Lottie (3) and GIF (4) stickers animate where asked; PNG (1) stickers and
+		// still requests use one decoded frame.
+		let prefix = if animate && self.animate_gifs && matches!(format_type, 2..=4) {
 			"anim"
 		} else {
 			"embed"
@@ -802,7 +806,7 @@ impl Avatars {
 				self.custom_emoji(ctx, id, animated, size, demo)
 			}
 			model::ImageShare::Sticker { id, format_type } => {
-				let key = self.sticker_key(ctx, id, format_type, demo);
+				let key = self.sticker_key(ctx, id, format_type, demo, true);
 				let animated = self.advance_animation(ctx, &key, false);
 				if let Some(entry) = self.textures.get_mut(&key) {
 					entry.0 = Instant::now();
@@ -841,7 +845,7 @@ impl Avatars {
 		let texture = match asset {
 			model::ImageShare::Emoji { id, .. } => self.emoji_textures.get(&format!("emoji-{id}")),
 			model::ImageShare::Sticker { id, format_type } => {
-				let key = self.sticker_key(ctx, id, format_type, false);
+				let key = self.sticker_key(ctx, id, format_type, false, true);
 				self.textures.get(&key)
 			}
 		};
@@ -860,7 +864,7 @@ impl Avatars {
 		let (key, emoji) = match asset {
 			model::ImageShare::Emoji { id, .. } => (format!("emoji-{id}"), true),
 			model::ImageShare::Sticker { id, format_type } => {
-				(self.sticker_key(ctx, id, format_type, false), false)
+				(self.sticker_key(ctx, id, format_type, false, true), false)
 			}
 		};
 		let textures = if emoji {
@@ -884,13 +888,35 @@ impl Avatars {
 		}
 	}
 
-	/// Transparent, clickable sticker artwork using the shared bounded media working set.
+	/// Transparent, clickable sticker artwork using the shared bounded media working set. It
+	/// animates when animation is on.
 	pub(crate) fn sticker_image(
 		&mut self,
 		ui: &mut egui::Ui,
 		sticker: &model::Sticker,
 		size: egui::Vec2,
 		demo: bool,
+	) -> egui::Response {
+		self.sticker_artwork(ui, sticker, size, demo, true)
+	}
+	/// The same artwork as one still frame, for navigation such as the picker's pack rail,
+	/// where Discord does not animate and every icon would otherwise hold a playing clip.
+	pub(crate) fn sticker_still(
+		&mut self,
+		ui: &mut egui::Ui,
+		sticker: &model::Sticker,
+		size: egui::Vec2,
+		demo: bool,
+	) -> egui::Response {
+		self.sticker_artwork(ui, sticker, size, demo, false)
+	}
+	fn sticker_artwork(
+		&mut self,
+		ui: &mut egui::Ui,
+		sticker: &model::Sticker,
+		size: egui::Vec2,
+		demo: bool,
+		animate: bool,
 	) -> egui::Response {
 		let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
 		response.widget_info(|| {
@@ -899,7 +925,7 @@ impl Avatars {
 		if !ui.is_rect_visible(rect) {
 			return response;
 		}
-		let key = self.sticker_key(ui.ctx(), sticker.id, sticker.format_type, demo);
+		let key = self.sticker_key(ui.ctx(), sticker.id, sticker.format_type, demo, animate);
 		if !self.paint(ui, &key, rect, 0) {
 			let failed = self.attempts.get(&key).is_some_and(|(_, failed)| *failed);
 			let supported = sticker.id.0 != 0 && matches!(sticker.format_type, 1..=4);
@@ -2267,6 +2293,14 @@ mod tests {
 			output.drop_without_applying_deltas();
 			assert!(images.take_requests().is_empty());
 		}
+		// Navigation art (the picker's pack rail) stays still even with animation on.
+		let mut rail = super::Avatars::default();
+		rail.set_animation(true);
+		ctx.run_ui(Default::default(), |ui| {
+			rail.sticker_still(ui, &sticker, egui::Vec2::splat(32.0), false);
+		})
+		.drop_without_applying_deltas();
+		assert_eq!(rail.take_requests(), vec!["embed:sticker-7-2".to_owned()]);
 		let mut demo = super::Avatars::default();
 		ctx.run_ui(Default::default(), |ui| {
 			demo.sticker_image(ui, &sticker, egui::Vec2::splat(160.0), true);

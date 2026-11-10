@@ -1810,8 +1810,9 @@ on logout, and are not persisted or synchronized.
 Images reuse the account-isolated credential-free cache, fixed Discord CDN hosts,
 existing download/decoder queues, four-animation / 16 MiB UI budget and the
 80-frame / 8 MiB / 160px animation decoder limit. Lottie input is capped at
-512 KiB and a 1024px source canvas; one 160px static PNG is rendered off-thread
-and cached instead of the JSON. No external image origin, log or background
+512 KiB and a 1024px source canvas; a 160px static PNG, or with animation enabled a
+160px APNG of at most 120 frames / 12 MiB at up to 60 fps, is rendered off-thread and cached
+instead of the JSON. No external image origin, log or background
 catalog polling is introduced.
 
 ### Search rich-text previews
