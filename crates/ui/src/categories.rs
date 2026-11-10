@@ -1068,12 +1068,35 @@ impl MessagingUi {
 									label.size().x + 12.0
 								});
 							let request = slot == Slot::Request;
-							let trailing = badge_width
-								+ if external.is_some() || request {
-									30.0
-								} else {
-									0.0
-								} + channel_marks::trailing(access);
+							// The private or group call this account is in shows how long it has
+							// run, as in Discord, measured from the call's own start time.
+							let call_time = (dm_list && !request)
+								.then(|| {
+									state
+										.voice
+										.active
+										.as_ref()
+										.filter(|call| {
+											call.channel == channel.id && call.guild.is_none()
+										})
+										.and_then(crate::voice::elapsed_label)
+								})
+								.flatten()
+								.map(|elapsed| {
+									ui.painter().layout_no_wrap(
+										elapsed,
+										egui::FontId::monospace(11.0),
+										egui::Color32::WHITE,
+									)
+								});
+							let call_width =
+								call_time.as_ref().map_or(0.0, |time| time.size().x + 14.0);
+							let trailing = call_width
+								+ badge_width + if external.is_some() || request {
+								30.0
+							} else {
+								0.0
+							} + channel_marks::trailing(access);
 							let content = egui::Rect::from_min_max(
 								egui::pos2(highlight.left() + 8.0, row.top()),
 								egui::pos2(row.right() - 8.0 - trailing, row.bottom()),
@@ -1347,17 +1370,35 @@ impl MessagingUi {
 									- egui::vec2(8.0 + lane + label.size().x, label.size().y * 0.5);
 								ui.painter().galley(pos, label, colors.muted);
 							}
+							if let Some(time) = call_time {
+								let pill = egui::Rect::from_min_max(
+									row.right_center()
+										- egui::vec2(8.0 + lane + call_width - 4.0, 9.0),
+									row.right_center() - egui::vec2(8.0 + lane, -9.0),
+								);
+								ui.painter().rect_filled(pill, 9, colors.positive);
+								ui.painter().galley(
+									pill.center() - time.size() * 0.5,
+									time,
+									egui::Color32::WHITE,
+								);
+								// One wake-up a second for the whole list while a call row shows.
+								if ui.is_rect_visible(pill) {
+									ui.ctx()
+										.request_repaint_after(std::time::Duration::from_secs(1));
+								}
+							}
 							if count > 0 {
 								crate::notifications::badge(
 									ui,
 									row.right_center()
 										- egui::vec2(
 											20.0 + lane
-												+ if external.is_some() || request {
-													30.0
-												} else {
-													0.0
-												},
+												+ call_width + if external.is_some() || request {
+												30.0
+											} else {
+												0.0
+											},
 											0.0,
 										),
 									count,
@@ -1988,6 +2029,48 @@ mod tests {
 			.as_slice(),
 			[Row::Category(_, 1)]
 		));
+	}
+
+	/// The conversation list shows how long the private call this account is in has run,
+	/// on that conversation's row only, and drops it when the call ends.
+	#[test]
+	fn the_active_private_call_shows_its_duration_in_the_conversation_list() {
+		fn texts(shape: &egui::Shape, out: &mut Vec<String>) {
+			match shape {
+				egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+				egui::Shape::Vec(children) => children.iter().for_each(|s| texts(s, out)),
+				_ => {}
+			}
+		}
+		// Connected 754 seconds ago: "12:34", or "12:35" on a slow run.
+		let mut state = test_support::call_demo_state();
+		let mut view = MessagingUi::default();
+		let ctx = egui::Context::default();
+		let render = |view: &mut MessagingUi, state: &mut State| {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(280.0, 1600.0),
+					)),
+					..Default::default()
+				},
+				|ui| {
+					view.channel_list(ui, state);
+				},
+			);
+			let mut out = Vec::new();
+			for clipped in &output.shapes {
+				texts(&clipped.shape, &mut out);
+			}
+			output.drop_without_applying_deltas();
+			out.into_iter()
+				.filter(|text| text.starts_with("12:3"))
+				.count()
+		};
+		assert_eq!(render(&mut view, &mut state), 1);
+		state.voice.active = None;
+		assert_eq!(render(&mut view, &mut state), 0);
 	}
 
 	/// Regression: the DM heading carries New Message, so it stays without unpinned DMs.
