@@ -129,7 +129,27 @@ impl Drop for Runtime {
 }
 
 impl Decoder {
-	pub fn open(mut source: Box<dyn ReadSeek>) -> Result<Self, &'static str> {
+	pub fn open(source: Box<dyn ReadSeek>) -> Result<Self, &'static str> {
+		Self::open_with_preference(source, true, None)
+	}
+
+	/// Batch-decode a short, silent preview into CPU frames. DXVA's device creation and
+	/// per-sample GPU readback cost more than software decoding for small gifv clips and can
+	/// exhaust the preview deadline before the clip finishes. The native processor also fits
+	/// frames before readback, avoiding a second CPU resize. Normal video playback retains
+	/// its hardware path and dimensions.
+	pub fn open_preview(source: Box<dyn ReadSeek>, edge: u32) -> Result<Self, &'static str> {
+		if edge == 0 {
+			return Err(INVALID);
+		}
+		Self::open_with_preference(source, false, Some(edge))
+	}
+
+	fn open_with_preference(
+		mut source: Box<dyn ReadSeek>,
+		prefer_hardware: bool,
+		edge: Option<u32>,
+	) -> Result<Self, &'static str> {
 		let length = source.seek(SeekFrom::End(0)).map_err(|_| INVALID)?;
 		source.seek(SeekFrom::Start(0)).map_err(|_| INVALID)?;
 		let mut header = [0_u8; 8];
@@ -152,47 +172,54 @@ impl Decoder {
 			length,
 		}
 		.into();
-		// DXVA first when a video-capable GPU device exists; the software reader is the
-		// fallback for anything the accelerated reader rejects.
+		// Playback prefers DXVA; CPU preview batches prefer software without creating a GPU
+		// device. Both retain the other mode as a fallback when configuration is unsupported.
 		// SAFETY: COM calls on the thread that initialized the runtime.
-		let mut hardware = unsafe { dxgi_manager() };
+		let mut hardware = None;
 		let mut error = UNSUPPORTED;
-		for accelerated in [true, false] {
-			if accelerated && hardware.is_none() {
-				continue;
-			}
-			// SAFETY: Rewinding our own IStream between attempts.
-			unsafe { stream.Seek(0, STREAM_SEEK_SET, None) }.map_err(|_| INVALID)?;
-			let manager = hardware
-				.as_ref()
-				.filter(|_| accelerated)
-				.map(|(_, manager)| manager);
-			match Self::configure(&stream, manager) {
-				Ok(parts) => {
-					let (device, manager) = match (accelerated, hardware.take()) {
-						(true, Some((device, manager))) => (Some(device), Some(manager)),
-						_ => (None, None),
-					};
-					return Ok(Self {
-						reader: parts.reader,
-						_stream: parts.stream,
-						_manager: manager,
-						_device: device,
-						_runtime: runtime,
-						info: parts.info,
-						video_index: parts.video_index,
-						audio_index: parts.audio_index,
-						video_done: false,
-						audio_done: parts.audio_index.is_none(),
-						width: parts.width,
-						height: parts.height,
-						stride: parts.stride,
-						buffer_height: parts.height,
-						crop: (0, 0),
-						rotation: parts.rotation,
-					});
+		// If a codec cannot negotiate a scaled output, keep its bounded native dimensions and
+		// let the caller resize retained frames instead.
+		for edge in std::iter::once(edge).chain(edge.map(|_| None)) {
+			for accelerated in [prefer_hardware, !prefer_hardware] {
+				if accelerated {
+					hardware = unsafe { dxgi_manager() };
+					if hardware.is_none() {
+						continue;
+					}
 				}
-				Err(failure) => error = failure,
+				// SAFETY: Rewinding our own IStream between attempts.
+				unsafe { stream.Seek(0, STREAM_SEEK_SET, None) }.map_err(|_| INVALID)?;
+				let manager = hardware
+					.as_ref()
+					.filter(|_| accelerated)
+					.map(|(_, manager)| manager);
+				match Self::configure(&stream, manager, edge) {
+					Ok(parts) => {
+						let (device, manager) = match (accelerated, hardware.take()) {
+							(true, Some((device, manager))) => (Some(device), Some(manager)),
+							_ => (None, None),
+						};
+						return Ok(Self {
+							reader: parts.reader,
+							_stream: parts.stream,
+							_manager: manager,
+							_device: device,
+							_runtime: runtime,
+							info: parts.info,
+							video_index: parts.video_index,
+							audio_index: parts.audio_index,
+							video_done: false,
+							audio_done: parts.audio_index.is_none(),
+							width: parts.width,
+							height: parts.height,
+							stride: parts.stride,
+							buffer_height: parts.height,
+							crop: (0, 0),
+							rotation: parts.rotation,
+						});
+					}
+					Err(failure) => error = failure,
+				}
 			}
 		}
 		Err(error)
@@ -201,6 +228,7 @@ impl Decoder {
 	fn configure(
 		source: &IStream,
 		manager: Option<&IMFDXGIDeviceManager>,
+		edge: Option<u32>,
 	) -> Result<Parts, &'static str> {
 		// SAFETY: COM inputs remain live; out parameters are initialized. The OS
 		// wrapper implements asynchronous IMFByteStream reads around our synchronized IStream.
@@ -233,6 +261,13 @@ impl Decoder {
 			let source_size = native.GetUINT64(&MF_MT_FRAME_SIZE).map_err(|_| INVALID)?;
 			let (width, height) =
 				super::playback_dimensions((source_size >> 32) as u32, source_size as u32)?;
+			let (width, height) = edge.map_or((width, height), |edge| {
+				let longest = u64::from(width.max(height).max(edge));
+				(
+					(u64::from(width) * u64::from(edge) / longest).max(1) as u32,
+					(u64::from(height) * u64::from(edge) / longest).max(1) as u32,
+				)
+			});
 			let rotation = native.GetUINT32(&MF_MT_VIDEO_ROTATION).unwrap_or(0);
 			if !matches!(rotation, 0 | 90 | 180 | 270) {
 				return Err(UNSUPPORTED);
@@ -916,61 +951,69 @@ mod tests {
 	use super::*;
 	#[test]
 	fn native_mov_decodes_audio_video_and_seeks() {
-		let source = std::io::Cursor::new(
-			include_bytes!("../../../../apps/desktop/tests/fixtures/video.mov").as_slice(),
-		);
-		let mut decoder = Decoder::open(Box::new(source)).unwrap();
-		let info = decoder.info();
-		assert_eq!(
-			(info.width, info.height, info.sample_rate),
-			(320, 180, 48_000)
-		);
-		assert!((2.9..3.1).contains(&info.duration));
-		let started = std::time::Instant::now();
-		let (mut videos, mut audio_frames, mut last_pts) = (0, 0, -1.0);
-		for _ in 0..1_000 {
-			let video = decoder.read_video().unwrap();
-			let audio = decoder.read_audio().unwrap();
-			if video.is_none() && audio.is_none() {
-				break;
+		for preview in [false, true] {
+			let source = std::io::Cursor::new(
+				include_bytes!("../../../../apps/desktop/tests/fixtures/video.mov").as_slice(),
+			);
+			let mut decoder = if preview {
+				Decoder::open_preview(Box::new(source), 160)
+			} else {
+				Decoder::open(Box::new(source))
 			}
-			for sample in [video, audio].into_iter().flatten() {
-				match sample {
-					Sample::Video { pts, picture } => {
-						assert!(picture.is_valid());
-						assert!(picture.data.windows(4).any(|pixel| pixel[0] != pixel[1]));
-						assert!(pts >= last_pts);
-						last_pts = pts;
-						videos += 1;
-					}
-					Sample::Audio { frames, .. } => {
-						assert!(frames.iter().flatten().all(|sample| sample.is_finite()));
-						audio_frames += frames.len();
+			.unwrap();
+			let info = decoder.info();
+			assert_eq!(
+				(info.width, info.height),
+				if preview { (160, 90) } else { (320, 180) }
+			);
+			assert_eq!(info.sample_rate, 48_000);
+			assert!((2.9..3.1).contains(&info.duration));
+			let started = std::time::Instant::now();
+			let (mut videos, mut audio_frames, mut last_pts) = (0, 0, -1.0);
+			for _ in 0..1_000 {
+				let video = decoder.read_video().unwrap();
+				let audio = decoder.read_audio().unwrap();
+				if video.is_none() && audio.is_none() {
+					break;
+				}
+				for sample in [video, audio].into_iter().flatten() {
+					match sample {
+						Sample::Video { pts, picture } => {
+							assert!(picture.is_valid());
+							assert!(picture.data.windows(4).any(|pixel| pixel[0] != pixel[1]));
+							assert!(pts >= last_pts);
+							last_pts = pts;
+							videos += 1;
+						}
+						Sample::Audio { frames, .. } => {
+							assert!(frames.iter().flatten().all(|sample| sample.is_finite()));
+							audio_frames += frames.len();
+						}
 					}
 				}
 			}
-		}
-		assert_eq!(videos, 72);
-		assert!(audio_frames >= 140_000);
-		assert!(decoder.read_video().unwrap().is_none());
-		assert!(decoder.read_audio().unwrap().is_none());
-		eprintln!(
-			"synthetic MOV decode: 72 frames + {audio_frames} PCM frames in {:.3} ms",
-			started.elapsed().as_secs_f64() * 1000.0
-		);
-		decoder.seek(1.0).unwrap();
-		let mut reached = false;
-		for _ in 0..200 {
-			if let Some(Sample::Video { pts, .. }) = decoder.read_video().unwrap()
-				&& pts >= 1.0
-			{
-				reached = true;
-				break;
+			assert_eq!(videos, 72);
+			assert!(audio_frames >= 140_000);
+			assert!(decoder.read_video().unwrap().is_none());
+			assert!(decoder.read_audio().unwrap().is_none());
+			eprintln!(
+				"synthetic MOV decode: 72 frames + {audio_frames} PCM frames in {:.3} ms",
+				started.elapsed().as_secs_f64() * 1000.0
+			);
+			decoder.seek(1.0).unwrap();
+			let mut reached = false;
+			for _ in 0..200 {
+				if let Some(Sample::Video { pts, .. }) = decoder.read_video().unwrap()
+					&& pts >= 1.0
+				{
+					reached = true;
+					break;
+				}
 			}
+			assert!(reached);
+			assert!(decoder.seek(f64::NAN).is_err());
+			drop(decoder);
 		}
-		assert!(reached);
-		assert!(decoder.seek(f64::NAN).is_err());
-		drop(decoder);
 		// Rotate only the known synthetic fixture's video-track matrix, retaining
 		// the same compressed samples. No second media fixture is needed.
 		let mut portrait =

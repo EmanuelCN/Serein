@@ -348,7 +348,19 @@ An animated GIF or WebP requests a sized proxy GIF first.
 A rejected request stays a placeholder.
 Tenor and Klipy previews stay on their original URL.
 
-A gifv embed with an allowed MP4, MOV, or M4V URL fetches that file and plays the frames through the platform video decoder.
+A gifv embed prefers its allowed MP4, MOV or M4V video rendition, inline and in the viewer.
+That rendition can contain more frames than the linked GIF: the reported Tenor example has a
+30 FPS MP4 and a 20 FPS GIF. The worker decodes every video frame on demand and schedules it
+using its presentation timestamp, without thinning a whole-loop RGBA cache or imposing GIF's
+minimum frame delay. It can deliver a first frame before download completion when the movie
+index and native read-ahead are available. Original HTTPS GIFs on `media.tenor.com`,
+`media1.tenor.com` and `c.tenor.com` remain fallbacks, followed by the poster.
+
+Windows preview decoders prefer Media Foundation's software path to avoid GPU setup/readback
+overhead for these small clips. The native processor fits frames before returning them;
+hardware remains a configuration fallback. Ordinary video playback retains its hardware
+preference. This is unofficial local media handling, not evidence of live protocol compatibility;
+no authenticated Discord session was used to validate the change.
 A WebM URL stays on the poster or GIF path, because this decoder does not read WebM.
 If the clip does not decode to at least two frames, the embed falls back to its GIF or poster.
 Live acceptance of the proxy query is unverified.

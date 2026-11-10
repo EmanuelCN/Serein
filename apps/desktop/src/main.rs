@@ -4686,9 +4686,18 @@ impl Desktop {
 					self.cache_status = error;
 				}
 				let stage = result.stage;
+				if stage == avatars::DecodeStage::Retry {
+					self.messaging.defer_avatar(ctx, &result.key);
+					continue;
+				}
+				if stage == avatars::DecodeStage::SourceCached {
+					continue;
+				}
 				self.messaging
 					.accept_avatar(ctx, result.key.clone(), result.image);
-				if stage == avatars::DecodeStage::Settled {
+				if let Some(stream) = result.stream {
+					self.messaging.accept_gif_stream(&result.key, stream);
+				} else if stage == avatars::DecodeStage::Settled {
 					self.messaging
 						.accept_gif_animation(result.key, result.frames);
 				}

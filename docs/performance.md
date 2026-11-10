@@ -27,8 +27,8 @@ not measured. The transport samples existing ACKs without scheduling an extra pr
 desktop keeps up to 24 millisecond values per connection.
 
 Recent synthetic/offline measurements are workload-specific. They do not establish live Discord
-performance, universal device results or application-wide memory bounds. The raw PR screenshot,
-log and per-run evidence archive has been removed; the summaries below retain the useful results.
+performance, universal device results or application-wide memory bounds. Historical raw screenshot,
+log and per-run archives have been removed; measurements link any retained reproduction evidence.
 
 ## G-SYNC steady refresh offer — November 10, 2026
 
@@ -2019,6 +2019,124 @@ measurements. Same-bucket requests are serialized; exhausted successful response
 hold only their route/bucket, while 429 responses retain the existing conservative
 shared cooldown. Synthetic regressions cover independent-channel progress,
 queued verification expiry, aliases, major resources, eviction and terminal wakeup.
+
+## Windows gifv previews - November 13, 2026
+
+Baseline `0ec7a773` includes the reported gifv and sticker-picker commits. The owner's next commit,
+`6cab6b0a`, changes release LTO only. These measurements use pinned Rust 1.99.1, locked dependencies,
+debug/test profiles and the existing optimized media dependencies on Windows 10 IoT Enterprise LTSC
+19044, Ryzen 5 4600H (12 logical processors), approximately 15.4 GiB RAM and an RTX 2060.
+Debug information was disabled and build concurrency limited after the initial build exhausted
+the host's paging-file allowance. No release build or package was produced, at the owner's request.
+
+The reported Tenor clip's 3,284,217-byte MP4 has 599 frames over 19.967 seconds. An isolated native
+decoder probe of the original GPU-first path took a median 4.974 seconds across five measured
+runs after one warmup, beyond the application's three-second preview deadline. Those diagnostic
+runs overlapped compilation and exclude application resizing/frame preparation. They explain the
+fallback; they are not a direct before/after application latency benchmark.
+
+The final local `local_clip_decode_workload` passed through the complete application animation
+decoder with native software-first decoding and native fitting. In one run without another build,
+the inline first frame arrived at 46.6 ms and all retained frames were ready at 600.7 ms. It kept
+136 frames over 19.959 seconds, reserving 41,744,448 bytes under its 40 MiB limit. The viewer's first
+frame arrived at 37.7 ms and its 108 frames were ready at 1,266.4 ms, playing 19.983 seconds and
+reserving 100,454,400 bytes under its 96 MiB limit. These exclude network transfer and actual display
+presentation. The downloaded provider clip stays in ignored local output; committed tests use
+synthetic fixtures. Ordinary video playback retains its hardware preference and dimensions.
+
+A synthetic MOV with a nonzero initial composition timestamp also verifies normalization before
+sampling, preserving its full loop without unnecessary frame compaction. Native MOV tests cover
+scaled previews and ordinary playback, audio and seeking. The
+[reproduction guide](pr-evidence/gifv-preview/README.md) and
+[raw measurements](pr-evidence/gifv-preview/measurements.json) describe the local tests.
+Release/package size, live Discord/network latency, GPU frame latency, native idle CPU and RSS
+were not measured. No account, calls, microphone or telemetry was used.
+
+## Original Tenor GIF cadence - November 14, 2026
+
+The source preference from this change was superseded on November 15: the measured 20 FPS
+belongs to the linked GIF file, while the embed's MP4 contains 30 FPS. These historical measurements
+do not establish the desired source or official-client cadence; see the video-rendition section below.
+
+Follow-up baseline `f19193d9` contains the software-first gifv playback fix above. That fix
+made the reported clip start promptly, but its MP4 rendition lasts 19.967 seconds while the
+original GIF lasts 18.05 seconds. The whole-loop RGBA cache also retained only 136 inline /
+108 viewer frames, corresponding to roughly 6.81 / 5.40 distinct frames per second.
+
+The original is 34,766,782 bytes at 280×498, with 361 authored 50 ms frames (20 FPS).
+Original Tenor GIFs now stream through a bounded worker and latest-frame handoff, preserving
+every authored frame without whole-loop thinning. Playback starts from the first complete frame
+while the rest downloads; an HTTP regression fixture withholds the response trailer to verify
+that delivery precedes download completion. Other gifv sources keep the platform-decoder fallback.
+
+With the same pinned debug/test configuration and host as above, one local original-GIF decode
+per size produced these results. This measures decoding without playback sleeps, network or
+display presentation, so total work is spread across the 18.05-second loop during playback.
+
+| Metric | Inline | Viewer |
+| --- | ---: | ---: |
+| Frames preserved / loop | 361 / 18.05 s | 361 / 18.05 s |
+| Longest authored frame hold | 50 ms | 50 ms |
+| First decoded frame | 19.36 ms | 11.23 ms |
+| Total full-loop decoding work | 5,537.32 ms | 2,768.67 ms |
+| Reserved bytes | 38,259,454 | 39,786,622 |
+| Existing per-animation ceiling | 41,943,040 | 100,663,296 |
+
+The reservation includes encoded source, three source canvases and six fitted-frame equivalents
+for conversion/handoff/uploads. At most eight stream workers run independently of short artwork
+decodes. Hidden/unfocused streams pause; dropped consumers cancel. Shared UI pools and result
+queue limits remain in place. Download bodies for disk-cache writes are additional bounded
+working sets; these numbers do not measure process RSS.
+
+One separate native WGPU sample of a generated 40-frame, 20 FPS GIF presented 100 texture
+revisions over 5.0032 seconds (19.987 FPS), with zero skipped revisions after a two-second warmup.
+The synthetic stream reserved 238,533 bytes. This checks the scheduler/texture handoff through
+loop rewinds; it does not measure the original asset's GPU scanout or compare the official client.
+
+The native original-asset sample subsequently presented 400 revisions over 20.0005 seconds
+(20.000 FPS rounded), with zero skipped revisions and a longest gap of 51.569 ms. After a
+two-second warmup its 20-second sample crosses an 18.05-second loop boundary, with the next
+opening frame decoded during the preceding final frame's hold. It reserved 38,259,454 bytes.
+This is native WGPU texture presentation of the downloaded source, excluding network transfer
+and GPU scanout. It is one measurement, not an official-client or broad hardware benchmark.
+
+[Reproduction and limitations](pr-evidence/gif-cadence/README.md) and
+[raw measurements](pr-evidence/gif-cadence/measurements.json) distinguish original decoding
+from the separate synthetic native cadence counter. No release/package, authenticated Discord
+session, network latency, GPU scanout, process RSS or idle CPU comparison was measured.
+
+## Full gifv video frame rate - November 15, 2026
+
+Baseline `0260a26c` preferred the linked 20 FPS GIF over the embed's 30 FPS MP4. The prior
+20 FPS results measured that GIF correctly, but did not validate the desired source. Current
+gifv playback prefers the video, decoding every frame on demand with native presentation
+timestamps instead of sampling a whole-loop RGBA cache. GIF and poster fallbacks remain.
+
+The reported MP4 contains 599 frames over 19.967 seconds and is 3,284,217 bytes, compared with
+361 frames over 18.05 seconds and 34,766,782 bytes for the linked GIF. With the same pinned
+debug/test configuration and Windows host described above, one native WGPU sample presented
+600 MP4 revisions over 20.0010 seconds (29.998 FPS), with zero skipped revisions and a longest
+gap of 35.225 ms, after two seconds of warmup. Its 20-second sample crosses a loop boundary.
+A final-source repeat presented 600 revisions in 20.0006 seconds (29.999 FPS), with zero skipped
+revisions and a longest gap of 34.830 ms. Neither native sample overlapped Cargo compilation.
+
+| Full-source video decoding, no playback sleeps | Inline | Viewer |
+| --- | ---: | ---: |
+| Preserved frames / loop | 599 / 19.967 s | 599 / 19.967 s |
+| Largest source timestamp gap | 33.3334 ms | 33.3334 ms |
+| First decoded frame | 45.5865 ms | 36.1632 ms |
+| Total loop decoding work | 984.5323 ms | 1,808.1807 ms |
+| Reserved stream bytes | 6,026,553 | 11,578,617 |
+
+These local decode timings exclude network and presentation. Native counters measure texture
+updates, not GPU scanout or authenticated official-client parity. The HTTP regression fixture
+proves first delivery before body completion when native read-ahead is available; a 24 FPS movie
+retains all 72 frames despite a two-frame cache budget, and timestamp tests preserve 60 FPS
+intervals without GIF's minimum-delay clamp. Eight workers and the existing byte/pool limits
+remain; video bodies retain their 16 MiB cap. Idle consumers cancel, and source rewinds happen
+during the final frame's hold. [Reproduction and limitations](pr-evidence/gifv-framerate/README.md)
+and [raw measurements](pr-evidence/gifv-framerate/measurements.json) identify the exact assets.
+No network latency, idle CPU, process RSS, release/package size or live client was measured.
 
 ## Sticker hover playback - November 12, 2026
 

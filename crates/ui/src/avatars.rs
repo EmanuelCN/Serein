@@ -1,6 +1,7 @@
 //! Visible-avatar requests and a small texture working set. Disk/network work lives outside egui.
 mod cosmetics;
 pub(crate) mod media;
+pub(crate) mod stream;
 
 use egui::emath::GuiRounding;
 use egui::{ColorImage, TextureHandle};
@@ -324,6 +325,19 @@ fn is_animated_profile_or_avatar_key(key: &str) -> bool {
 }
 
 impl Avatars {
+	pub fn defer(&mut self, ctx: &egui::Context, key: &str) {
+		if let Some(rendition) = media::Rendition::parse(key) {
+			self.media.defer(rendition);
+			ctx.request_repaint_after(RETRY);
+		}
+	}
+	pub fn accept_stream(&mut self, key: &str, stream: stream::AnimationStream) {
+		if self.animate_gifs
+			&& let Some(rendition) = media::Rendition::parse(key)
+		{
+			self.media.accept_stream(rendition, stream);
+		}
+	}
 	/// Expand playback to a hovered row or an open profile, still gated by settings and focus.
 	pub fn with_avatar_animation<R>(
 		&mut self,
@@ -1723,6 +1737,65 @@ impl Avatars {
 			);
 		}
 	}
+	/// Prefer the embed's video rendition, which may contain more frames than the linked GIF.
+	/// An unsupported video falls back to an allowed original GIF, then the poster.
+	pub(crate) fn gif_embed_clip(&mut self, embed: &model::Embed) -> Option<model::EmbedMedia> {
+		let poster = embed.image.as_ref().or(embed.thumbnail.as_ref());
+		if !self.animate_gifs {
+			return None;
+		}
+		let clip = (|| {
+			let video = embed.video.as_ref()?;
+			let url = video
+				.url
+				.as_deref()
+				.filter(|url| media::is_motion_video(url))
+				.or(video
+					.proxy_url
+					.as_deref()
+					.filter(|url| media::is_motion_video(url)))
+				.filter(|url| self.media.playable(url))?;
+			Some(model::EmbedMedia {
+				url: Some(url.to_owned()),
+				proxy_url: video
+					.proxy_url
+					.clone()
+					.filter(|proxy| media::is_motion_video(proxy)),
+				width: if video.width > 0 {
+					video.width
+				} else {
+					poster.map(|poster| poster.width).unwrap_or(0)
+				},
+				height: if video.height > 0 {
+					video.height
+				} else {
+					poster.map(|poster| poster.height).unwrap_or(0)
+				},
+				placeholder: if video.placeholder.is_empty() {
+					poster
+						.map(|poster| poster.placeholder.clone())
+						.unwrap_or_default()
+				} else {
+					video.placeholder.clone()
+				},
+			})
+		})();
+		clip.or_else(|| {
+			let url = embed
+				.url
+				.as_deref()
+				.filter(|url| model::valid_tenor_gif_source(url))
+				.filter(|url| self.media.playable(url))?;
+			let size = poster.or(embed.video.as_ref());
+			Some(model::EmbedMedia {
+				url: Some(url.to_owned()),
+				proxy_url: None,
+				width: size.map_or(0, |media| media.width),
+				height: size.map_or(0, |media| media.height),
+				placeholder: poster.map_or_else(Vec::new, |media| media.placeholder.clone()),
+			})
+		})
+	}
 	pub fn show_gif_embed(
 		&mut self,
 		ui: &mut egui::Ui,
@@ -1732,45 +1805,7 @@ impl Avatars {
 		demo: bool,
 	) -> egui::Response {
 		let poster = embed.image.as_ref().or(embed.thumbnail.as_ref());
-		let video = self
-			.animate_gifs
-			.then_some(embed.video.as_ref())
-			.flatten()
-			.and_then(|video| {
-				let url = video
-					.url
-					.as_deref()
-					.filter(|url| media::is_motion_video(url))
-					.or(video
-						.proxy_url
-						.as_deref()
-						.filter(|url| media::is_motion_video(url)))
-					.filter(|url| self.media.playable(url))?;
-				Some(model::EmbedMedia {
-					url: Some(url.to_owned()),
-					proxy_url: video
-						.proxy_url
-						.clone()
-						.filter(|proxy| media::is_motion_video(proxy)),
-					width: if video.width > 0 {
-						video.width
-					} else {
-						poster.map(|poster| poster.width).unwrap_or(0)
-					},
-					height: if video.height > 0 {
-						video.height
-					} else {
-						poster.map(|poster| poster.height).unwrap_or(0)
-					},
-					placeholder: if video.placeholder.is_empty() {
-						poster
-							.map(|poster| poster.placeholder.clone())
-							.unwrap_or_default()
-					} else {
-						video.placeholder.clone()
-					},
-				})
-			});
+		let video = self.gif_embed_clip(embed);
 		// A favorite's saved Discord attachment link lacks the expiring signature and is
 		// refused; the embed's own media is the same GIF, freshly signed, and plays as is.
 		let original = gif
@@ -3290,6 +3325,61 @@ mod tests {
 		assert_eq!(fallback, [format!("media:is:64x32:{poster}")]);
 		// The rejected clip is never requested again.
 		assert!(!frame(&mut images).iter().any(|key| key.ends_with(".mp4")));
+	}
+
+	/// Both surfaces select the embed video, preserving frames absent from the linked GIF.
+	/// An unavailable video falls back to the original GIF, then the poster.
+	#[test]
+	fn tenor_links_prefer_video_and_fall_back_to_original_then_poster() {
+		let ctx = egui::Context::default();
+		let mut images = Avatars::default();
+		images.set_animation(true);
+		let clip_url = "https://media.tenor.com/rfhdy0TtiAoAAAPo/horse-derp.mp4";
+		let embed = model::Embed {
+			kind: "gifv".into(),
+			url: Some("https://media1.tenor.com/m/rfhdy0TtiAoAAAAC/horse-derp.gif".into()),
+			thumbnail: Some(model::EmbedMedia {
+				url: Some("https://media.tenor.com/rfhdy0TtiAoAAAAe/horse-derp.png".into()),
+				width: 360,
+				height: 640,
+				..Default::default()
+			}),
+			video: Some(model::EmbedMedia {
+				url: Some(clip_url.into()),
+				width: 360,
+				height: 640,
+				..Default::default()
+			}),
+			..Default::default()
+		};
+		let frame = |images: &mut Avatars| {
+			ctx.run_ui(Default::default(), |ui| {
+				images.show_gif_embed(ui, &embed, None, egui::vec2(320.0, 320.0), false);
+			})
+			.drop_without_applying_deltas();
+			images.take_requests()
+		};
+		let clip = frame(&mut images);
+		assert_eq!(clip.len(), 1);
+		assert!(clip[0].starts_with("media:ia:") && clip[0].ends_with(clip_url));
+		// The viewer opens the same video.
+		let viewed = images.gif_embed_clip(&embed).unwrap();
+		assert_eq!(viewed.url.as_deref(), Some(clip_url));
+		images.accept(&ctx, clip[0].clone(), None);
+		assert_eq!(
+			images.gif_embed_clip(&embed).unwrap().url.as_deref(),
+			embed.url.as_deref()
+		);
+		let video = frame(&mut images);
+		assert_eq!(video.len(), 1);
+		assert!(video[0].ends_with(embed.url.as_deref().unwrap()));
+		images.accept(&ctx, video[0].clone(), None);
+		assert!(images.gif_embed_clip(&embed).is_none());
+		let fallback = frame(&mut images);
+		assert!(
+			fallback.iter().all(|key| key.ends_with("horse-derp.png")),
+			"{fallback:?}"
+		);
 	}
 
 	#[test]

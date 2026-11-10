@@ -1,0 +1,86 @@
+{
+  "baseline_commit": "0ec7a773",
+  "working_tree_base": "6cab6b0a",
+  "toolchain": "1.99.1",
+  "os": "Windows 10 IoT Enterprise LTSC 19044",
+  "cpu": "AMD Ryzen 5 4600H, 12 logical processors",
+  "physical_ram_kib": 16119108,
+  "gpu": "NVIDIA GeForce RTX 2060",
+  "profile": "debug/test, debug information disabled; existing media package optimization retained",
+  "validated_on": "2026-11-13",
+  "local_tenor_clip": {
+    "source": "https://media.tenor.com/rfhdy0TtiAoAAAPo/horse-derp.mp4",
+    "encoded_bytes": 3284217,
+    "source_frames": 599,
+    "source_duration_seconds": 19.967,
+    "original_native_probe_measured_samples": 5,
+    "original_native_probe_seconds": [
+      4.9755822,
+      4.9741091,
+      5.0414555,
+      4.8777189,
+      4.9235546
+    ],
+    "original_native_probe_median_seconds": 4.9741091,
+    "original_native_probe_first_frame_ms": [
+      293.3773,
+      280.8618,
+      406.3819,
+      314.0711,
+      297.9932
+    ],
+    "final_full_application_samples": 1,
+    "inline": {
+      "first_frame_ms": 46.5913,
+      "settled_ms": 600.7219,
+      "frames": 136,
+      "playback_seconds": 19.959,
+      "reserved_bytes": 41744448,
+      "limit_bytes": 41943040
+    },
+    "viewer": {
+      "first_frame_ms": 37.728,
+      "settled_ms": 1266.4243,
+      "frames": 108,
+      "playback_seconds": 19.983,
+      "reserved_bytes": 100454400,
+      "limit_bytes": 100663296
+    },
+    "network_transfer_included": false,
+    "note": "Original native probe and final application preparation have different measurement boundaries; they are not a direct latency benchmark pair. Native probe ran alongside compilation. Final app check ran without another build."
+  },
+  "unmeasured": [
+    "release/package sizes",
+    "network and live Discord latency",
+    "GPU frame latency",
+    "native idle CPU",
+    "process RSS"
+  ],
+  "validation": {
+    "format": "passed",
+    "workspace_clippy_warnings_denied": "passed",
+    "no_default_features_check": "passed",
+    "policy": "passed",
+    "workspace_check": "not green: two unchanged failures reproduced on baseline",
+    "known_failures": [
+      {
+        "test": "typing::tests::bounded_flood_refresh_and_out_of_order_signals_have_fixed_storage",
+        "failure": "Expected 8 entries, received 16",
+        "reproduced_on_baseline": "0ec7a773"
+      },
+      {
+        "test": "transport::test_stream::established_streams_bound_missing_rekey_execution_and_welcome",
+        "failure": "45-second test timeout",
+        "reproduced_on_baseline": "0ec7a773"
+      }
+    ],
+    "release_build": "not run, per owner instruction",
+    "push": "not performed",
+    "desktop_tests": {
+      "passed": 233,
+      "ignored": 5
+    },
+    "native_mov_playback_and_scaled_preview": "passed",
+    "local_clip_workload": "passed"
+  }
+}

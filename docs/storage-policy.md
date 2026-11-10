@@ -945,9 +945,12 @@ Current image limits include the GIF and larger-viewer features added after Sept
 One coordinator owns disk access while up to eight credential-free download/decode jobs overlap.
 The request channel and coordinator backlog each hold at most 1,024 keys; viewer keys run before inline keys.
 Ordinary encoded bodies are capped at 2 MiB. Animation bodies are capped at 16 MiB.
+Original HTTPS Tenor GIFs on the three allowed media hosts admit up to 40 MiB encoded,
+further reduced by their decoded working set before the first frame is delivered.
 A still message picture accepts at most 32 MiB encoded.
 Eight overlapping downloads can hold one body each, separately from decoder memory.
-The completed encoded source is released before waiting to deliver its decoded result.
+Whole-loop decoders release the completed encoded source before waiting to deliver a decoded result.
+Original Tenor GIF streams retain their bounded encoded source for loop rewinds instead.
 Decoded results have a shared 128-item / 128 MiB allocation budget, including pixel-vector
 capacity, frame/key metadata and the result being consumed by the UI. Final results wait for
 capacity and remain cancellable; optional first-frame previews are skipped when either bound
@@ -961,19 +964,45 @@ The size ladder is 32, 64, 128, 256, 368, 512, 720, 1024, 1440, 2048, 2880, and 
 The requested rung is never longer than the file.
 Inline stills keep 384 images and 96 MiB.
 Inline animations keep 96 clips and 128 MiB.
-One inline clip keeps 240 frames and 40 MiB.
+One inline cached clip keeps 240 frames and 40 MiB.
 The viewer lane keeps 128 MiB and drops those pixels on the first frame the viewer is not painted.
-One viewer clip keeps 240 frames and 96 MiB.
-An animation that exceeds 600 frames or 3 seconds of decoding stays on its first frame.
+One viewer cached clip keeps 240 frames and 96 MiB.
+Message gifv video renditions and original Tenor GIF fallbacks use a single latest-frame handoff
+instead of retaining a whole decoded loop.
+At most eight cancellable decoder threads run, separately from the eight short image-decode permits.
+Their encoded input, three source canvases and six fitted-frame equivalents (conversion, initial
+delivery and playback uploads) are reserved together under the same 40 MiB inline / 96 MiB viewer
+ceilings and shared animation/viewer pools. GIF canvases and exposed video pictures are capped
+at 2048×2048, with at most 3,600 frames per loop. GIF delays remain clamped to 20 ms–10 seconds;
+video frames retain their finite, increasing presentation timestamps, including intervals below
+20 ms. Neither stream reduces frame count to fit a whole-loop cache. Video sources remain
+capped at 16 MiB encoded, original GIFs at 40 MiB (further constrained by their working set).
+A download temporarily holds one additional bounded encoded body for the existing disk-cache
+write, within the eight active-job bound. Video/image requests have a 15-second overall deadline,
+large original GIF requests 60 seconds. Movie startup has a 15-second admission deadline and
+streaming video polling rejects 15 seconds without progress. Native backend/driver allocations
+are additional to the application reservation, as for the existing player.
+Known content length permits bounded seeks before the whole body arrives; reads wait cancellably
+for the requested bytes. First-frame delivery depends on movie indexing and native read-ahead,
+and does not wait for an entire decoded loop. Before first delivery the loading lease is bounded
+by network deadlines and cancellation; it cannot require refreshes from a UI that has no frame yet.
+Delivered hidden streams pause after 500 ms without a visible consumer and expire after five seconds;
+unfocused windows pause immediately. Dropping a viewer cancels its stream. A saturated decoder
+or animation pool defers new streams with five-second backoff instead of displacing visible clips
+or waiting on a decoder permit inside every image job.
+A cached image animation that exceeds 600 source frames or 3 seconds of decoding stays on its first frame.
+Legacy batch-decoded ISO-BMFF clips admit up to 3,600 source frames within the same deadline, sampling before
+conversion to keep the decoded frame/byte bounds above. Windows preview batches prefer software
+decoding with a hardware configuration fallback; this does not change ordinary video playback.
 A gifv clip the platform decoder rejects is not retried; the embed shows its GIF or poster.
-GIF, WebP, and ISO-BMFF clips share that frame budget.
+Other GIF, WebP, and ISO-BMFF cached clips share that frame budget.
 Animation source dimensions are capped at 2048×2048, with a 48 MiB decoder allocation
 budget for the persistent RGBA canvas, current frame and composited output canvas.
 Resized retained frames, encoded input and library overhead are additional.
 Active decoding, image conversion, and framework or driver allocations are additional.
 Avatar and emoji textures stay on their existing caches.
 Message pictures use the still, animation, and viewer ceilings above.
-Each animation playback texture's uploads are spaced at least 16 ms apart (up to about 60 FPS), with
+Cached animation playback texture uploads are spaced at least 16 ms apart (up to about 60 FPS), with
 source timing preserved by skipping frames; unfocused windows do not advance clips.
 These are component ceilings, not measured whole-process RSS. Disk eviction retains only
 32 candidate paths at a time. Worker completion fences replacement and deletion, so
