@@ -2269,6 +2269,10 @@ impl MessagingUi {
 								let avatar = self.avatars.show(ui, user, 32.0, state.demo);
 								avatar_rect = Some(avatar.rect);
 								avatar_focused = avatar.has_focus();
+								// Speaking in a call shows here too, whichever page is open.
+								if self.own_speaking(state) {
+									voice::speaking_ring(ui, avatar.rect);
+								}
 								avatar.widget_info(|| {
 									egui::WidgetInfo::labeled(
 										egui::Role::Button,
