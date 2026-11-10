@@ -178,6 +178,8 @@ struct Live {
 	remote_video: Arc<std::sync::Mutex<RemotePictures>>,
 	/// Decoded audio of a watched stream, mixed into this call's playback.
 	stream_audio: mpsc::SyncSender<discord_voice::PlaybackFrame>,
+	/// Received soundboard sounds for this call's playback mix; dropped with the call.
+	soundboard: mpsc::SyncSender<discord_voice::soundboard::Clip>,
 }
 
 #[derive(Default)]
@@ -355,6 +357,7 @@ struct Rejoin {
 #[derive(Default)]
 pub struct Voice {
 	camera_test: Option<CameraTest>,
+	soundboard: crate::soundboard::Player,
 	mic_preview: Option<MicPreview>,
 	screen: crate::screen::Screen,
 	watch: crate::watch::Watch,
@@ -899,6 +902,33 @@ impl Voice {
 		self.reap();
 		if !state.demo {
 			ui.voice_latency = ui::VoiceLatency::default();
+		}
+		// Core admits effects only for the connected call; the channel check guards a call that
+		// was replaced in between. Effects for no live call are discarded here.
+		for (sound, reason) in state.take_dropped_sound_effects() {
+			discord_voice::soundboard::trace(format_args!(
+				"stage=request source=effect sound={sound} result=ignored reason={reason}"
+			));
+		}
+		for playback in state.take_sound_effects() {
+			if let Some(live) = self
+				.live
+				.as_ref()
+				.filter(|live| live.channel == playback.effect.channel)
+			{
+				self.soundboard.play(
+					playback,
+					ui.voice_gain.soundboard_percent,
+					live.soundboard.clone(),
+					runtime.handle(),
+				);
+			} else {
+				discord_voice::soundboard::trace(format_args!(
+					"stage=request source={} sound={} result=ignored reason=no-live-media",
+					playback.source.label(),
+					playback.effect.sound
+				));
+			}
 		}
 		if std::mem::take(&mut self.leave_cue) && ui.notification_options.allows(Sound::UserLeave) {
 			ui.notification_preview = Some(Sound::UserLeave);
@@ -1791,6 +1821,8 @@ impl Voice {
 		let (camera_frames, camera_receive) =
 			mpsc::sync_channel(discord_voice::camera_video::MAX_QUEUED_FRAMES);
 		let (stream_audio, stream_audio_receive) = mpsc::sync_channel(8);
+		let (soundboard, soundboard_receive) =
+			mpsc::sync_channel(discord_voice::soundboard::MAX_VOICES);
 		let (playback, playback_receive) = mpsc::sync_channel(8);
 		let (send, events) = mpsc::sync_channel(8);
 		let failure = Arc::new(OnceLock::new());
@@ -1893,6 +1925,7 @@ impl Voice {
 				},
 				Some(sink),
 				Some(stream_audio_receive),
+				Some(soundboard_receive),
 				move |event| {
 					let notice = match event {
 						Status::TransportReady => Notice::TransportReady(negotiation_revision),
@@ -1962,6 +1995,7 @@ impl Voice {
 			camera_clock: Instant::now(),
 			remote_video,
 			stream_audio,
+			soundboard,
 			negotiation: Some(pending),
 		});
 		Ok(())
@@ -2983,6 +3017,7 @@ mod tests {
 		let (_latency, latency) = watch::channel(ui::VoiceLatency::default());
 		let (camera_frames, _camera_frames) = mpsc::sync_channel(1);
 		let (stream_audio, _stream_audio) = mpsc::sync_channel(8);
+		let (soundboard, _soundboard) = mpsc::sync_channel(1);
 		manager.live = Some(Live {
 			generation: pending.generation,
 			channel: pending.channel,
@@ -3011,6 +3046,7 @@ mod tests {
 			camera_clock: Instant::now(),
 			remote_video: Arc::new(std::sync::Mutex::new(Vec::new())),
 			stream_audio,
+			soundboard,
 		});
 		let failure = |revision| {
 			Event::Voice(voice::Event::SessionConfirmationFailed {
