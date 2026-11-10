@@ -403,6 +403,35 @@ impl MessagingUi {
 			}) && self.voice_speaking.contains(&participant.user)
 	}
 
+	/// Whether this account is speaking in its call, by the same rule and the same transport
+	/// speaking set as its tile and roster row, for avatars outside the call UI such as the
+	/// account card. The local mute and deafen choice applies at once; the call's participant
+	/// entry, when it reports one, adds server mute and deafen.
+	pub(super) fn own_speaking(&self, state: &State) -> bool {
+		let (Some(call), Some(user)) = (state.voice.active.as_ref(), state.user.as_ref()) else {
+			return false;
+		};
+		// The local choice applies at once; the call's own entry follows when Discord echoes it.
+		if self.voice_muted || self.voice_deafened {
+			return false;
+		}
+		let own = call
+			.participants
+			.iter()
+			.find(|participant| participant.user == user.id)
+			.copied()
+			.unwrap_or(Participant {
+				user: user.id,
+				muted: false,
+				deafened: false,
+				server_muted: call.server_muted,
+				server_deafened: call.server_deafened,
+				video: false,
+				streaming: false,
+			});
+		self.is_speaking(state, call.channel, &own)
+	}
+
 	pub(super) fn voice_channel_button(
 		&mut self,
 		ui: &mut egui::Ui,
@@ -4448,14 +4477,19 @@ fn ringing_pulse(ui: &egui::Ui, avatar: egui::Rect) {
 		.request_repaint_after(std::time::Duration::from_millis(33));
 }
 
-fn speaking_avatar(ui: &egui::Ui, avatar: &egui::Response, name: &str) {
+/// The green speaking ring around a round avatar in `rect`, as in Discord.
+pub(super) fn speaking_ring(ui: &egui::Ui, rect: egui::Rect) {
 	let colors = design::palette(ui);
 	// Inset the centered stroke so the ring stays inside the avatar.
 	ui.painter().circle_stroke(
-		avatar.rect.center(),
-		avatar.rect.width() * 0.5 - 1.5,
+		rect.center(),
+		rect.width() * 0.5 - 1.5,
 		egui::Stroke::new(3.0, colors.positive),
 	);
+}
+
+fn speaking_avatar(ui: &egui::Ui, avatar: &egui::Response, name: &str) {
+	speaking_ring(ui, avatar.rect);
 	let label = format!("{name} · Speaking");
 	// Callers own the avatar's tooltip; a second one here would stack under it.
 	avatar.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, &label));
@@ -6121,6 +6155,41 @@ mod tests {
 			messaging.stream_preview_request.is_none(),
 			"An uninterrupted hover requests only once"
 		);
+	}
+
+	/// Regression: the account card's avatar never showed the speaking ring. It follows the
+	/// same speaking set as the call UI, on any page, and respects mute and deafen.
+	#[test]
+	fn own_speaking_follows_the_call_on_every_page() {
+		let mut state = test_support::voice_demo_state();
+		let own = state.user.as_ref().unwrap().id;
+		let call = state.voice.active.as_mut().unwrap();
+		call.phase = Phase::Connected;
+		let channel = call.channel;
+		let mut messaging = MessagingUi::default();
+		assert!(!messaging.own_speaking(&state));
+		messaging.voice_speaking = vec![own];
+		assert!(messaging.own_speaking(&state));
+		// Browsing elsewhere keeps the indicator.
+		state.selected = state
+			.channels
+			.iter()
+			.map(|c| c.id)
+			.find(|id| *id != channel);
+		assert!(messaging.own_speaking(&state));
+		// Muted or deafened, the account is not shown speaking.
+		messaging.voice_muted = true;
+		assert!(!messaging.own_speaking(&state));
+		messaging.voice_muted = false;
+		state.voice.active.as_mut().unwrap().deafened = true;
+		assert!(!messaging.own_speaking(&state));
+		state.voice.active.as_mut().unwrap().deafened = false;
+		// Stopped speaking, or left the call.
+		messaging.voice_speaking.clear();
+		assert!(!messaging.own_speaking(&state));
+		messaging.voice_speaking = vec![own];
+		state.voice.active = None;
+		assert!(!messaging.own_speaking(&state));
 	}
 
 	/// Clicking a live participant's name opens their stream: with two people live, exactly the
