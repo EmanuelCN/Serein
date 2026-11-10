@@ -729,6 +729,8 @@ impl MediaLibrary {
 				next_upload: now,
 				frame: usize::MAX,
 				bytes,
+				fitted: None,
+				shown: None,
 			},
 		};
 		held.arrived = now;

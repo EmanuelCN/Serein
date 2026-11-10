@@ -121,6 +121,17 @@ opt-level = 3
 [profile.dev.package.generic_singleton]
 opt-level = 3
 
+# Lottie stickers are rasterized frame by frame (up to 120 per clip); unoptimized, one
+# sticker takes seconds and a picker page holds the decode workers for tens of seconds.
+[profile.dev.package.rasterlottie]
+opt-level = 3
+
+[profile.dev.package.tiny-skia]
+opt-level = 3
+
+[profile.dev.package.tiny-skia-path]
+opt-level = 3
+
 [profile.dev.package.libopus_sys]
 opt-level = 3
 

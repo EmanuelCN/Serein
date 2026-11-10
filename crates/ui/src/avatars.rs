@@ -21,6 +21,8 @@ const ANIMATION_INTERVAL: Duration = Duration::from_millis(16);
 /// again from the disk cache once the artwork would play. Off-screen GIFs and hover-only avatars
 /// otherwise held their full RGBA frame sets until a whole pool filled.
 pub(crate) const IDLE_FRAMES: Duration = Duration::from_secs(5);
+/// An animation drawn this recently is on screen and is never evicted to make room.
+const ON_SCREEN: Duration = Duration::from_millis(500);
 const RELEASED: usize = 2048;
 struct Animation {
 	frames: GifFrames,
@@ -31,6 +33,11 @@ struct Animation {
 	next_upload: Instant,
 	frame: usize,
 	bytes: usize,
+	/// Frames downscaled for the size they are drawn at, made once per frame index and kept,
+	/// so playback no longer resamples every frame on the UI thread on every loop.
+	fitted: Option<(u32, Vec<Option<Arc<ColorImage>>>)>,
+	/// The edge of the frame now in `texture`; `None` for a full-size frame.
+	shown: Option<u32>,
 }
 
 // Emoji artwork has its own working set so media cannot evict it.
@@ -102,15 +109,60 @@ pub(crate) struct Avatars {
 
 impl Animation {
 	fn advance(&mut self, ctx: &egui::Context) -> Option<TextureHandle> {
+		self.advance_fitted(ctx, None)
+	}
+	/// Advances to the current frame, downscaled to `edge` when the frames are much larger
+	/// than where they are drawn.
+	fn advance_fitted(&mut self, ctx: &egui::Context, edge: Option<u32>) -> Option<TextureHandle> {
 		let total_nanos = self.total.as_nanos();
 		if total_nanos == 0 {
 			return None;
 		}
 		let elapsed_nanos = (self.started.elapsed().as_nanos() % total_nanos) as u64;
-		self.seek(ctx, Duration::from_nanos(elapsed_nanos))
+		self.seek_fitted(ctx, Duration::from_nanos(elapsed_nanos), edge)
+	}
+	/// Longest edge of the decoded frames.
+	fn source_edge(&self) -> u32 {
+		self.frames.first().map_or(0, |(_, image)| {
+			image.resolution()[0].max(image.resolution()[1]) as u32
+		})
+	}
+	/// The frame at `index`, downscaled to `edge` once and then reused on every later loop.
+	fn fitted_frame(&mut self, index: usize, edge: u32) -> Arc<ColorImage> {
+		if self
+			.fitted
+			.as_ref()
+			.is_none_or(|(fitted, _)| *fitted != edge)
+		{
+			if let Some((_, old)) = self.fitted.take() {
+				let released: usize = old
+					.iter()
+					.flatten()
+					.map(|image| image.pixels().len() * 4)
+					.sum();
+				self.bytes = self.bytes.saturating_sub(released);
+			}
+			self.fitted = Some((edge, vec![None; self.frames.len()]));
+		}
+		let (_, frames) = self.fitted.as_mut().expect("fitted frames");
+		if let Some(image) = &frames[index] {
+			return image.clone();
+		}
+		let image = Arc::new(crate::resample::downscale(&self.frames[index].1, edge));
+		self.bytes += image.pixels().len() * 4;
+		frames[index] = Some(image.clone());
+		image
 	}
 	/// Shows the frame at `elapsed` into the clip, which must be shorter than `total`.
-	fn seek(&mut self, ctx: &egui::Context, mut elapsed: Duration) -> Option<TextureHandle> {
+	fn seek(&mut self, ctx: &egui::Context, elapsed: Duration) -> Option<TextureHandle> {
+		self.seek_fitted(ctx, elapsed, None)
+	}
+	fn seek_fitted(
+		&mut self,
+		ctx: &egui::Context,
+		mut elapsed: Duration,
+		edge: Option<u32>,
+	) -> Option<TextureHandle> {
 		let now = Instant::now();
 		self.played = now;
 		let mut target_index = self.frames.len().saturating_sub(1);
@@ -124,12 +176,17 @@ impl Animation {
 			elapsed -= *delay;
 		}
 
-		if self.frame != target_index {
+		if self.frame != target_index || self.shown != edge {
 			if now < self.next_upload {
 				ctx.request_repaint_after(self.next_upload - now);
 				return self.texture.clone();
 			}
-			let image = &self.frames[target_index].1;
+			// Only the frame actually drawn is uploaded: full size, or fitted to its place.
+			let image = match edge {
+				Some(edge) => self.fitted_frame(target_index, edge),
+				None => self.frames[target_index].1.clone(),
+			};
+			self.shown = edge;
 			if let Some(texture) = &mut self.texture {
 				texture.set(image.clone(), egui::TextureOptions::LINEAR);
 			} else {
@@ -305,22 +362,32 @@ impl Avatars {
 		};
 		if bytes > ANIMATION_BYTES
 			|| frames.iter().any(|(delay, image)| {
-				*delay < Duration::from_millis(20)
+				// 60 fps; slower GIF delays are already raised by the decoder.
+				*delay < Duration::from_millis(16)
 					|| image.resolution()[0] > edge
 					|| image.resolution()[1] > edge
 			}) {
 			return;
 		}
+		// Only animations off screen make room. Evicting one still being drawn made it reload
+		// and evict another in turn, so a page of stickers larger than the pool decoded and
+		// uploaded frames in a loop. When every held animation is on screen, the newcomer
+		// keeps its still and is retried after the usual backoff.
+		let now = Instant::now();
 		while self.animations.len() >= ANIMATIONS
 			|| self.animations.values().map(|a| a.bytes).sum::<usize>() + bytes > ANIMATION_BYTES
 		{
 			let Some(oldest) = self
 				.animations
-				.keys()
-				.min_by_key(|key| self.textures.get(*key).map(|v| v.0))
-				.cloned()
+				.iter()
+				.filter(|(_, animation)| {
+					now.saturating_duration_since(animation.played) >= ON_SCREEN
+				})
+				.min_by_key(|(key, _)| self.textures.get(*key).map(|v| v.0))
+				.map(|(key, _)| key.clone())
 			else {
-				break;
+				self.attempts.insert(key, (now, true));
+				return;
 			};
 			self.animations.remove(&oldest);
 		}
@@ -335,6 +402,8 @@ impl Avatars {
 				next_upload: Instant::now(),
 				frame: usize::MAX,
 				bytes,
+				fitted: None,
+				shown: None,
 			},
 		);
 	}
@@ -751,9 +820,11 @@ impl Avatars {
 		id: model::Id,
 		format_type: u8,
 		_demo: bool,
+		animate: bool,
 	) -> String {
-		// APNG (2), Lottie (3) and GIF (4) stickers animate; PNG (1) stickers are still.
-		let prefix = if self.animate_gifs && matches!(format_type, 2..=4) {
+		// APNG (2), Lottie (3) and GIF (4) stickers animate where asked; PNG (1) stickers and
+		// still requests use one decoded frame.
+		let prefix = if animate && self.animate_gifs && matches!(format_type, 2..=4) {
 			"anim"
 		} else {
 			"embed"
@@ -803,7 +874,7 @@ impl Avatars {
 				self.custom_emoji(ctx, id, animated, size, demo)
 			}
 			model::ImageShare::Sticker { id, format_type } => {
-				let key = self.sticker_key(ctx, id, format_type, demo);
+				let key = self.sticker_key(ctx, id, format_type, demo, true);
 				let animated = self.advance_animation(ctx, &key, false);
 				if let Some(entry) = self.textures.get_mut(&key) {
 					entry.0 = Instant::now();
@@ -842,7 +913,7 @@ impl Avatars {
 		let texture = match asset {
 			model::ImageShare::Emoji { id, .. } => self.emoji_textures.get(&format!("emoji-{id}")),
 			model::ImageShare::Sticker { id, format_type } => {
-				let key = self.sticker_key(ctx, id, format_type, false);
+				let key = self.sticker_key(ctx, id, format_type, false, true);
 				self.textures.get(&key)
 			}
 		};
@@ -861,7 +932,7 @@ impl Avatars {
 		let (key, emoji) = match asset {
 			model::ImageShare::Emoji { id, .. } => (format!("emoji-{id}"), true),
 			model::ImageShare::Sticker { id, format_type } => {
-				(self.sticker_key(ctx, id, format_type, false), false)
+				(self.sticker_key(ctx, id, format_type, false, true), false)
 			}
 		};
 		let textures = if emoji {
@@ -885,13 +956,35 @@ impl Avatars {
 		}
 	}
 
-	/// Transparent, clickable sticker artwork using the shared bounded media working set.
+	/// Transparent, clickable sticker artwork using the shared bounded media working set. It
+	/// animates when animation is on.
 	pub(crate) fn sticker_image(
 		&mut self,
 		ui: &mut egui::Ui,
 		sticker: &model::Sticker,
 		size: egui::Vec2,
 		demo: bool,
+	) -> egui::Response {
+		self.sticker_artwork(ui, sticker, size, demo, true)
+	}
+	/// The same artwork as one still frame, for navigation such as the picker's pack rail,
+	/// where Discord does not animate and every icon would otherwise hold a playing clip.
+	pub(crate) fn sticker_still(
+		&mut self,
+		ui: &mut egui::Ui,
+		sticker: &model::Sticker,
+		size: egui::Vec2,
+		demo: bool,
+	) -> egui::Response {
+		self.sticker_artwork(ui, sticker, size, demo, false)
+	}
+	fn sticker_artwork(
+		&mut self,
+		ui: &mut egui::Ui,
+		sticker: &model::Sticker,
+		size: egui::Vec2,
+		demo: bool,
+		animate: bool,
 	) -> egui::Response {
 		let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
 		response.widget_info(|| {
@@ -900,7 +993,7 @@ impl Avatars {
 		if !ui.is_rect_visible(rect) {
 			return response;
 		}
-		let key = self.sticker_key(ui.ctx(), sticker.id, sticker.format_type, demo);
+		let key = self.sticker_key(ui.ctx(), sticker.id, sticker.format_type, demo, animate);
 		if !self.paint(ui, &key, rect, 0) {
 			let failed = self.attempts.get(&key).is_some_and(|(_, failed)| *failed);
 			let supported = sticker.id.0 != 0 && matches!(sticker.format_type, 1..=4);
@@ -1224,6 +1317,17 @@ impl Avatars {
 		key: &str,
 		hovered: bool,
 	) -> Option<TextureHandle> {
+		self.advance_animation_in(ctx, key, hovered, None)
+	}
+	/// Like `advance_animation`, with the frame fitted to `physical` pixels when the decoded
+	/// frames would otherwise be minified past what the GPU samples cleanly.
+	fn advance_animation_in(
+		&mut self,
+		ctx: &egui::Context,
+		key: &str,
+		hovered: bool,
+		physical: Option<f32>,
+	) -> Option<TextureHandle> {
 		if !self.animate_gifs
 			|| !ctx.input(|input| input.focused)
 			|| !(hovered || self.avatar_animation || !is_animated_profile_or_avatar_key(key))
@@ -1231,7 +1335,10 @@ impl Avatars {
 			return None;
 		}
 		if let Some(animation) = self.animations.get_mut(key) {
-			return animation.advance(ctx);
+			let edge = physical.and_then(|physical| {
+				crate::resample::fitted_edge(animation.source_edge(), physical)
+			});
+			return animation.advance_fitted(ctx, edge);
 		}
 		if is_animated_profile_or_avatar_key(key) {
 			if self.wanted.len() >= REQUESTS {
@@ -1296,8 +1403,13 @@ impl Avatars {
 			{
 				self.request(key.to_string());
 			}
-			animated_texture =
-				self.advance_animation(ui.ctx(), key, ui.rect_contains_pointer(rect));
+			let physical = rect.width().max(rect.height()) * ui.ctx().pixels_per_point();
+			animated_texture = self.advance_animation_in(
+				ui.ctx(),
+				key,
+				ui.rect_contains_pointer(rect),
+				Some(physical),
+			);
 		}
 		let animated = animated_texture.is_some();
 		let full = {
@@ -1309,7 +1421,12 @@ impl Avatars {
 			}
 			animated_texture.unwrap_or_else(|| entry.1.clone())
 		};
-		let texture = self.coverage(ui.ctx(), key, &full, animated, rect);
+		// A playing frame is already fitted to this place; stills get their fitted copy here.
+		let texture = if animated {
+			full
+		} else {
+			self.coverage(ui.ctx(), key, &full, false, rect)
+		};
 		paint_texture(ui, &texture, rect, radius, cover, egui::Color32::WHITE);
 		true
 	}
@@ -2268,6 +2385,14 @@ mod tests {
 			output.drop_without_applying_deltas();
 			assert!(images.take_requests().is_empty());
 		}
+		// Navigation art (the picker's pack rail) stays still even with animation on.
+		let mut rail = super::Avatars::default();
+		rail.set_animation(true);
+		ctx.run_ui(Default::default(), |ui| {
+			rail.sticker_still(ui, &sticker, egui::Vec2::splat(32.0), false);
+		})
+		.drop_without_applying_deltas();
+		assert_eq!(rail.take_requests(), vec!["embed:sticker-7-2".to_owned()]);
 		let mut demo = super::Avatars::default();
 		ctx.run_ui(Default::default(), |ui| {
 			demo.sticker_image(ui, &sticker, egui::Vec2::splat(160.0), true);
@@ -2278,6 +2403,99 @@ mod tests {
 		assert_eq!(demo.bytes, 128 * 128 * 4);
 	}
 	use super::*;
+	/// Regression: a picker page of animated stickers larger than the pool made visible
+	/// animations evict and reload each other on every frame. An animation on screen is never
+	/// evicted: the newcomer keeps its still and backs off, and only one gone off screen makes
+	/// room.
+	#[test]
+	fn on_screen_animations_are_never_evicted_to_make_room() {
+		let ctx = egui::Context::default();
+		let mut images = Avatars::default();
+		images.set_animation(true);
+		let load = |images: &mut Avatars, key: &str| {
+			images.request(key.to_owned());
+			// The app drains requests every frame; the queue itself is bounded.
+			images.take_requests();
+			images.accept(
+				&ctx,
+				key.to_owned(),
+				Some(ColorImage::filled([2, 2], egui::Color32::WHITE)),
+			);
+			images.accept_animation(
+				key.to_owned(),
+				(0..2u8)
+					.map(|shade| {
+						(
+							Duration::from_millis(50),
+							Arc::new(ColorImage::filled([2, 2], egui::Color32::from_gray(shade))),
+						)
+					})
+					.collect(),
+			);
+		};
+		for index in 0..ANIMATIONS {
+			load(&mut images, &format!("anim:sticker-{}-2", index + 1));
+		}
+		assert_eq!(images.animations.len(), ANIMATIONS);
+		let newcomer = "anim:sticker-9999-2";
+		load(&mut images, newcomer);
+		assert!(!images.animations.contains_key(newcomer));
+		assert!(
+			images
+				.attempts
+				.get(newcomer)
+				.is_some_and(|(_, failed)| *failed)
+		);
+		assert_eq!(images.animations.len(), ANIMATIONS);
+		// The first sticker scrolled away a while ago: it alone makes room.
+		let gone = images.animations.get_mut("anim:sticker-1-2").unwrap();
+		gone.played = gone.played.checked_sub(ON_SCREEN).unwrap();
+		images.attempts.remove(newcomer);
+		load(&mut images, newcomer);
+		assert!(images.animations.contains_key(newcomer));
+		assert!(!images.animations.contains_key("anim:sticker-1-2"));
+		assert_eq!(images.animations.len(), ANIMATIONS);
+	}
+
+	/// Regression: an animation drawn smaller than its frames was downscaled again on the UI
+	/// thread for every frame of every loop. Each frame is fitted once and kept, and counted.
+	#[test]
+	fn fitted_animation_frames_are_made_once_and_reused() {
+		let ctx = egui::Context::default();
+		let mut images = Avatars::default();
+		images.set_animation(true);
+		let key = "anim:sticker-7-3";
+		images.request(key.to_owned());
+		images.accept(
+			&ctx,
+			key.to_owned(),
+			Some(ColorImage::filled([160, 160], egui::Color32::RED)),
+		);
+		images.accept_animation(
+			key.to_owned(),
+			(0..2u8)
+				.map(|shade| {
+					(
+						Duration::from_millis(20),
+						Arc::new(ColorImage::filled(
+							[160, 160],
+							egui::Color32::from_gray(shade),
+						)),
+					)
+				})
+				.collect(),
+		);
+		let animation = images.animations.get_mut(key).unwrap();
+		let before = animation.bytes;
+		let first = animation.fitted_frame(0, 64);
+		assert_eq!(first.resolution(), [64, 64]);
+		assert!(Arc::ptr_eq(&first, &animation.fitted_frame(0, 64)));
+		assert_eq!(animation.bytes, before + 64 * 64 * 4);
+		// Drawn at another size, the old fitted copies are released, not kept beside new ones.
+		animation.fitted_frame(1, 32);
+		assert_eq!(animation.bytes, before + 32 * 32 * 4);
+	}
+
 	#[test]
 	fn placeholder_paints_decoded_thumbhash_while_the_image_is_requested() {
 		let ctx = egui::Context::default();
