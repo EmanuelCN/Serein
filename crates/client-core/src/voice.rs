@@ -847,22 +847,36 @@ impl ClientState {
 				{
 					return;
 				}
-				if ringing.as_ref().is_some_and(|r| {
-					r.len() > MAX_PARTICIPANTS
-						|| r.iter().enumerate().any(|(index, user)| {
-							!self.dm_call_participant(channel, *user) || r[..index].contains(user)
-						})
-				}) || participants.as_ref().is_some_and(|p| {
-					p.len() > MAX_PARTICIPANTS
-						|| p.iter().enumerate().any(|(index, participant)| {
-							!self.dm_call_participant(channel, participant.user)
-								|| p[..index]
-									.iter()
-									.any(|other| other.user == participant.user)
-						})
-				}) {
+				if ringing.as_ref().is_some_and(|r| r.len() > MAX_PARTICIPANTS)
+					|| participants
+						.as_ref()
+						.is_some_and(|p| p.len() > MAX_PARTICIPANTS)
+				{
 					return;
 				}
+				// A group's member list here can lag behind Discord's (someone added after this
+				// device loaded the group). Users it does not know, and repeats, are left out
+				// rather than discarding the update, which used to silence every group ring.
+				let ringing = ringing.map(|users| {
+					let mut known = Vec::with_capacity(users.len());
+					for user in users {
+						if self.dm_call_participant(channel, user) && !known.contains(&user) {
+							known.push(user);
+						}
+					}
+					known
+				});
+				let participants = participants.map(|all| {
+					let mut known: Vec<Participant> = Vec::with_capacity(all.len());
+					for participant in all {
+						if self.dm_call_participant(channel, participant.user)
+							&& !known.iter().any(|other| other.user == participant.user)
+						{
+							known.push(participant);
+						}
+					}
+					known
+				});
 				if unavailable {
 					self.end_voice_channel(channel);
 					return;
@@ -2133,6 +2147,46 @@ pub(crate) mod tests {
 		assert!(state.ring_recipient(Id(2), request, Id(3), true).is_none());
 		state.end_voice_channel(Id(2));
 		assert!(state.voice.ringing(Id(2)).is_empty());
+	}
+
+	/// Regression: a group call rang no one when Discord's ringing list named a member this
+	/// device did not know yet, because the whole call update was rejected.
+	#[test]
+	fn group_calls_ring_every_member_even_with_stale_membership() {
+		let mut state = dm_state();
+		state.channels[0].kind = 3;
+		let mut fourth = state.channels[0].recipients[0].clone();
+		fourth.id = Id(4);
+		state.channels[0].recipients.push(fourth);
+		state.invalidate_navigation();
+		// User 3 starts the call; Discord rings everyone else, including a member (5) added
+		// to the group after this device loaded it.
+		state.apply_voice(Event::Call {
+			channel: Id(2),
+			ringing: Some(vec![Id(1), Id(4), Id(5)]),
+			participants: None,
+			unavailable: false,
+		});
+		assert_eq!(state.voice.incoming, Some(Id(2)));
+		assert_eq!(state.voice.ringing(Id(2)), [Id(1), Id(4)]);
+		// Answered elsewhere, declined or cancelled: Discord drops this user from ringing.
+		state.apply_voice(Event::Call {
+			channel: Id(2),
+			ringing: Some(vec![Id(4)]),
+			participants: None,
+			unavailable: false,
+		});
+		assert_eq!(state.voice.incoming, None);
+		// Ringing again later rings once more; the call ending clears it.
+		state.apply_voice(Event::Call {
+			channel: Id(2),
+			ringing: Some(vec![Id(1)]),
+			participants: None,
+			unavailable: false,
+		});
+		assert_eq!(state.voice.incoming, Some(Id(2)));
+		state.apply_voice(Event::Deleted { channel: Id(2) });
+		assert_eq!(state.voice.incoming, None);
 	}
 
 	#[test]
