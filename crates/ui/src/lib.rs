@@ -512,6 +512,8 @@ pub struct MessagingUi {
 	stream_preview_open: Option<((Id, Id, Id), u64)>,
 	stream_preview_request: Option<(Id, Id, Id)>,
 	stream_preview_watch: Option<(Id, Id)>,
+	/// The pending watch came from a click that should also open the stream's channel.
+	stream_preview_navigate: bool,
 	/// Guild voice channel double-clicked in the channel list, joined after selection applies.
 	voice_join: Option<Id>,
 	pub voice_inputs: Vec<(String, String)>,
