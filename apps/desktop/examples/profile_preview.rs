@@ -23,6 +23,10 @@ struct Preview {
 	output: PathBuf,
 	thumbnail: bool,
 	proxy_artwork: bool,
+	/// Original animated artwork for exercising simultaneous picker and footer sizes.
+	animated_stickers: bool,
+	sticker_warmup: u8,
+	sticker_hover: Option<egui::Pos2>,
 	frames: u8,
 	/// Wheel distance and pointer position injected over the first frames, for pages below the fold.
 	scroll: Option<(f32, egui::Pos2)>,
@@ -43,6 +47,9 @@ impl eframe::App for Preview {
 	}
 
 	fn raw_input_hook(&mut self, _: &egui::Context, raw_input: &mut egui::RawInput) {
+		if let Some(at) = self.sticker_hover {
+			raw_input.events.push(egui::Event::PointerMoved(at));
+		}
 		if self.close_settings && self.frames == 0 {
 			// The Chat settings page shares its route name with the timeline's semantic page.
 			// Close it first so this fixture reaches the conversation.
@@ -79,6 +86,9 @@ impl eframe::App for Preview {
 	fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
 		let ctx = ui.ctx().clone();
 		ui::design::paint_backdrop(&ctx);
+		if self.animated_stickers {
+			self.messaging.sync_reading_zoom(&ctx);
+		}
 		// Only synthetic fixtures execute these commands; no service adapters exist here.
 		for command in self.messaging.show(ui, &mut self.state) {
 			let event = match command {
@@ -135,6 +145,54 @@ impl eframe::App for Preview {
 				generation: self.state.generation,
 				event,
 			});
+		}
+		if self.animated_stickers && self.sticker_warmup > 0 {
+			self.sticker_warmup -= 1;
+		} else if self.animated_stickers {
+			let stickers: Vec<_> = self
+				.state
+				.stickers
+				.recent
+				.iter()
+				.chain(
+					self.state
+						.guilds
+						.iter()
+						.flat_map(|guild| guild.stickers.iter().flatten()),
+				)
+				.chain(
+					self.state
+						.stickers
+						.packs
+						.iter()
+						.flat_map(|pack| &pack.stickers),
+				)
+				.map(|sticker| sticker.id)
+				.collect();
+			for id in stickers {
+				let key = format!("anim:sticker-{id}-3");
+				let frames: ui::GifFrames = (0..8)
+					.map(|frame| {
+						let mut image =
+							egui::ColorImage::filled([160, 120], egui::Color32::TRANSPARENT);
+						for y in 12..108 {
+							for x in 12..148 {
+								image.pixels_mut()[y * 160 + x] =
+									if (x / 4 + y / 4 + frame) % 2 == 0 {
+										egui::Color32::from_rgb(250, 181, 98)
+									} else {
+										egui::Color32::from_rgb(35, 39, 48)
+									};
+							}
+						}
+						(Duration::from_millis(100), Arc::new(image))
+					})
+					.collect();
+				self.messaging
+					.accept_avatar(&ctx, key.clone(), Some(frames[0].1.as_ref().clone()));
+				self.messaging.accept_gif_animation(key, frames);
+			}
+			self.animated_stickers = false;
 		}
 		if self.proxy_artwork {
 			// Only generated artwork is served. There is no network/image-worker adapter in
@@ -822,6 +880,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	}
 	let width: f32 = value("--width=").unwrap_or("1120").parse()?;
 	let height: f32 = value("--height=").unwrap_or("760").parse()?;
+	let animated_stickers =
+		page == "stickers" && args.iter().any(|arg| arg == "--animated-stickers");
+	let sticker_hover = value("--sticker-hover=")
+		.map(|value| {
+			let (x, y) = value
+				.split_once(',')
+				.ok_or("Expected --sticker-hover=x,y")?;
+			Ok::<_, Box<dyn std::error::Error>>(egui::pos2(x.parse()?, y.parse()?))
+		})
+		.transpose()?;
 	let scroll = value("--scroll=")
 		.map(str::parse::<f32>)
 		.transpose()?
@@ -1145,6 +1213,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				messaging.preview_slash_command_options(&mut state);
 			} else if page == "stickers" {
 				test_support::seed_stickers(&mut state);
+				if animated_stickers {
+					for sticker in state
+						.stickers
+						.recent
+						.iter_mut()
+						.chain(
+							state
+								.guilds
+								.iter_mut()
+								.flat_map(|guild| guild.stickers.iter_mut().flatten()),
+						)
+						.chain(
+							state
+								.stickers
+								.packs
+								.iter_mut()
+								.flat_map(|pack| &mut pack.stickers),
+						) {
+						sticker.format_type = 3;
+					}
+				}
 				messaging.preview_sticker_picker();
 			} else if page == "collectibles" {
 				// Synthetic cosmetics: the UI draws their artwork locally, offline. They are
@@ -1460,6 +1549,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				output,
 				thumbnail,
 				proxy_artwork,
+				animated_stickers,
+				sticker_warmup: 3,
+				sticker_hover,
 				frames: 0,
 				scroll,
 				toolbar_hover,

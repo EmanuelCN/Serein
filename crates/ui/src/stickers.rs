@@ -94,8 +94,9 @@ impl Browser {
 										state.demo,
 										32.0,
 									),
+									// Pack icons stay still, as in Discord; only the grid plays.
 									Group::Pack(_) if !section.stickers.is_empty() => avatars
-										.sticker_image(
+										.sticker_still(
 											ui,
 											&section.stickers[0],
 											egui::Vec2::splat(32.0),

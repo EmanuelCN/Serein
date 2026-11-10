@@ -139,6 +139,14 @@ skip the optional catalog read for new profile loads. Turning them on drops the 
 cache so details reload. Both preferences live in the bounded `app_preferences` row; older
 rows load with every cosmetic hidden and the historical budgets.
 
+## Animated artwork sizes (November 12, 2026)
+
+Animated artwork retains at most four fitted sizes alongside its original frames. Each size has
+an independent playback texture and caches each downscaled frame once. The complete fitted loop
+and its largest upload texture are reserved before admitting a size, within the shared 128 MiB /
+128-animation artwork pool. A size that cannot fit uses the original playback texture. Fitted
+frames and their reservations are released with the animation; nothing new is persisted.
+
 ## Off-screen artwork retention (October 10, 2026)
 
 Avatar, banner, activity, sticker, GIF-picker and custom/high-resolution emoji
@@ -965,7 +973,7 @@ Resized retained frames, encoded input and library overhead are additional.
 Active decoding, image conversion, and framework or driver allocations are additional.
 Avatar and emoji textures stay on their existing caches.
 Message pictures use the still, animation, and viewer ceilings above.
-Animation texture uploads are spaced at least 34 ms apart (under 30 FPS), with
+Each animation playback texture's uploads are spaced at least 16 ms apart (up to about 60 FPS), with
 source timing preserved by skipping frames; unfocused windows do not advance clips.
 These are component ceilings, not measured whole-process RSS. Disk eviction retains only
 32 candidate paths at a time. Worker completion fences replacement and deletion, so
@@ -1839,8 +1847,8 @@ Images reuse the account-isolated credential-free cache, fixed Discord CDN hosts
 existing download/decoder queues, four-animation / 16 MiB UI budget and the
 80-frame / 8 MiB / 160px animation decoder limit. Lottie input is capped at
 512 KiB and a 1024px source canvas; a 160px static PNG, or with animation enabled a
-160px APNG of at most 75 frames at up to 30 fps, is rendered off-thread and cached instead
-of the JSON. No external image origin, log or background
+160px APNG of at most 120 frames / 8 MiB at up to 60 fps, is rendered off-thread and cached
+instead of the JSON. No external image origin, log or background
 catalog polling is introduced.
 
 ### Search rich-text previews

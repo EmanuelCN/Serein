@@ -73,11 +73,9 @@ pub(crate) fn downscale_filter(
 		.max(1) as u32;
 	let nh = ((u64::from(height) * u64::from(edge) + u64::from(longest) / 2) / u64::from(longest))
 		.max(1) as u32;
-	let mut raw = Vec::with_capacity(image.pixels().len() * 4);
-	for pixel in image.pixels() {
-		raw.extend(pixel.to_array());
-	}
-	let Some(buffer) = image::RgbaImage::from_raw(width, height, raw) else {
+	// One copy of the packed pixels: a per-pixel loop here runs unoptimized in development
+	// builds and cost more than the optimized resize itself, on the UI thread.
+	let Some(buffer) = image::RgbaImage::from_raw(width, height, image.as_raw().to_vec()) else {
 		return image.clone();
 	};
 	let scaled = image::DynamicImage::ImageRgba8(buffer)
