@@ -50,6 +50,8 @@ pub struct AppPreferences {
 	pub convert_emoticons: bool,
 	/// Request a conversation's page while the pointer rests on it; older preferences enable it.
 	pub preload_on_hover: bool,
+	/// Opt-in: one click on a voice channel joins it. Older preferences keep it off.
+	pub click_to_join_voice: bool,
 	/// Show as Idle after 10 minutes of system inactivity; older preferences enable it.
 	pub auto_idle: bool,
 	/// Hide the in-app title strip. macOS and Windows then show the system title bar.
@@ -120,6 +122,7 @@ impl Default for AppPreferences {
 			hide_nitro_emojis: false,
 			convert_emoticons: false,
 			preload_on_hover: true,
+			click_to_join_voice: false,
 			auto_idle: true,
 			hide_title_bar: false,
 			message_requests_collapsed: false,
@@ -2198,6 +2201,8 @@ mod tests {
 		assert_eq!(legacy.soundboard_percent, 100);
 		// Existing installs run first-run setup once, like a fresh one.
 		assert!(!legacy.setup_done);
+		// Joining voice with one click is opt-in, also for preferences saved before it existed.
+		assert!(!legacy.click_to_join_voice);
 		// Existing serialized bindings omit the newly optional diagnostics shortcut.
 		let mut old_bindings = serde_json::to_value(model::Keybinds::default()).unwrap();
 		old_bindings

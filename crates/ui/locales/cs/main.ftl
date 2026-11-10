@@ -4712,6 +4712,8 @@ settings-convert-emoticons = Automaticky převádět emotikony ve zprávách na 
 settings-convert-emoticons-description = Při odesílání nebo úpravě zpráv převést samostatné emotikony jako :) na 🙂. Kód a odkazy zůstanou beze změny.
 settings-preload-on-hover = Předem načítat po najetí myší
 settings-preload-on-hover-description = Načíst konverzaci, profil nebo výběr GIFů, když na nich spočine ukazatel, aby se otevřely okamžitě. Používá stejné požadavky jako otevření, nejvýše 12 za minutu pro každý druh.
+settings-click-to-join-voice = Připojit se k hlasovému kanálu jedním kliknutím
+settings-click-to-join-voice-description = Kliknutím na hlasový kanál v seznamu kanálů se k němu hned připojíte, místo abyste ho jen otevřeli. Dvojklik připojí vždy.
 
 profiles-board = Board
 profiles-board-unavailable = This profile’s board is unavailable.

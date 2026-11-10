@@ -4612,6 +4612,8 @@ settings-convert-emoticons = Emoticons in Nachrichten automatisch in Emojis umwa
 settings-convert-emoticons-description = Wandelt eigenständige Emoticons wie :) beim Senden oder Bearbeiten von Nachrichten in 🙂 um. Code und Links bleiben unverändert.
 settings-preload-on-hover = Beim Daraufzeigen vorab laden
 settings-preload-on-hover-description = Lädt eine Unterhaltung, ein Profil oder die GIF-Auswahl, während der Mauszeiger darauf verweilt, sodass sie sich sofort öffnet. Verwendet dieselben Anfragen wie das Öffnen, maximal 12 pro Minute für jede Art.
+settings-click-to-join-voice = Sprachkanälen mit einem Klick beitreten
+settings-click-to-join-voice-description = Ein Klick auf einen Sprachkanal in der Kanalliste tritt ihm sofort bei, statt ihn nur zu öffnen. Ein Doppelklick tritt immer bei.
 
 profiles-board = Board
 profiles-board-unavailable = This profile’s board is unavailable.

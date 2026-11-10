@@ -346,6 +346,8 @@ pub struct MessagingUi {
 	pub message_requests_collapsed: bool,
 	/// Custom emoji that need Nitro stay out of `:` suggestions and are locked in pickers.
 	pub hide_nitro_emojis: bool,
+	/// Opt-in: a single click on a voice channel row joins it, not only opens it.
+	pub click_to_join_voice: bool,
 	/// Profile cosmetics shown on this device; hidden ones are not downloaded.
 	pub cosmetics: model::CosmeticPreferences,
 	/// Disk budgets and retention for downloaded images.
