@@ -641,10 +641,11 @@ impl LocalStore {
 		let value: Option<String> = self.0.query_row(
             "SELECT CASE WHEN length(CAST(value AS BLOB))<=16384 THEN value ELSE NULL END FROM app_preferences WHERE singleton=1",
             [], |row| row.get(0)).optional()?;
-		let value: AppPreferences = match value {
+		let mut value: AppPreferences = match value {
 			Some(value) => serde_json::from_str(&value).map_err(|_| StoreError::Incompatible)?,
 			None => AppPreferences::default(),
 		};
+		value.keybinds.upgrade();
 		if !value.is_valid() {
 			return Err(StoreError::Incompatible);
 		}
@@ -2213,6 +2214,29 @@ mod tests {
 			restored.send_message,
 			model::Keybinds::default().send_message
 		);
+		// Regression: preferences saved while Ctrl+E inserted inline code load with Ctrl+E
+		// on the emoji picker and inline code on its new default, instead of a clash.
+		let mut before_picker = serde_json::to_value(AppPreferences::default()).unwrap();
+		let keybinds = before_picker["keybinds"].as_object_mut().unwrap();
+		keybinds.remove("emoji_picker");
+		keybinds.insert(
+			"inline_code".into(),
+			serde_json::json!({"key": "E", "modifiers": model::keybinds::PRIMARY}),
+		);
+		store
+			.0
+			.execute(
+				"INSERT OR REPLACE INTO app_preferences VALUES(1,?1)",
+				[before_picker.to_string()],
+			)
+			.unwrap();
+		let upgraded = store.app_preferences().unwrap().keybinds;
+		assert_eq!(
+			upgraded.emoji_picker,
+			model::KeyChord::new("E", model::keybinds::PRIMARY)
+		);
+		assert_eq!(upgraded.inline_code, model::Keybinds::default().inline_code);
+		store.0.execute("DELETE FROM app_preferences", []).unwrap();
 		// An action this build no longer has drops only its own row.
 		let lenient: model::Keybinds = serde_json::from_value(serde_json::json!({
 			"custom": [

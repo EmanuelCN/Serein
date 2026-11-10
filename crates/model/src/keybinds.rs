@@ -59,6 +59,7 @@ pub enum KeybindAction {
 	SendMessage,
 	InsertNewLine,
 	EditLastMessage,
+	EmojiPicker,
 	Bold,
 	Italic,
 	Underline,
@@ -74,7 +75,7 @@ pub enum KeybindAction {
 }
 
 impl KeybindAction {
-	pub const ALL: [Self; 19] = [
+	pub const ALL: [Self; 20] = [
 		Self::ShowShortcuts,
 		Self::SwitchConversation,
 		Self::SearchConversation,
@@ -82,6 +83,7 @@ impl KeybindAction {
 		Self::SendMessage,
 		Self::InsertNewLine,
 		Self::EditLastMessage,
+		Self::EmojiPicker,
 		Self::Bold,
 		Self::Italic,
 		Self::Underline,
@@ -105,6 +107,7 @@ impl KeybindAction {
 			Self::SendMessage => "Send Message",
 			Self::InsertNewLine => "Insert New Line",
 			Self::EditLastMessage => "Edit Last Editable Message",
+			Self::EmojiPicker => "Toggle Emoji Picker",
 			Self::Bold => "Bold",
 			Self::Italic => "Italic",
 			Self::Underline => "Underline",
@@ -144,6 +147,8 @@ pub struct Keybinds {
 	pub send_message: KeyChord,
 	pub insert_new_line: KeyChord,
 	pub edit_last_message: KeyChord,
+	/// Opens or closes the composer's emoji picker; Ctrl+E as in Discord.
+	pub emoji_picker: KeyChord,
 	pub bold: KeyChord,
 	pub italic: KeyChord,
 	pub underline: KeyChord,
@@ -219,11 +224,12 @@ impl Default for Keybinds {
 			send_message: KeyChord::new("Enter", 0),
 			insert_new_line: KeyChord::new("Enter", SHIFT),
 			edit_last_message: KeyChord::new("ArrowUp", 0),
+			emoji_picker: KeyChord::new("E", PRIMARY),
 			bold: KeyChord::new("B", PRIMARY),
 			italic: KeyChord::new("I", PRIMARY),
 			underline: KeyChord::new("U", PRIMARY),
 			strikethrough: KeyChord::new("X", PRIMARY | SHIFT),
-			inline_code: KeyChord::new("E", PRIMARY),
+			inline_code: KeyChord::new("E", PRIMARY | SHIFT),
 			code_block: KeyChord::new("C", PRIMARY | SHIFT),
 			spoiler: KeyChord::new("P", PRIMARY | SHIFT),
 			push_to_talk: KeyChord::new("V", 0),
@@ -237,6 +243,17 @@ impl Default for Keybinds {
 }
 
 impl Keybinds {
+	/// Bring preferences saved by an older build up to date. Ctrl+E used to insert inline
+	/// code; it now opens the emoji picker, whose missing field loads as Ctrl+E. A saved
+	/// inline-code binding still on that old default moves to its new default instead of
+	/// claiming the same key. Bindings the user chose themselves are left alone.
+	pub fn upgrade(&mut self) {
+		let old_inline_code = KeyChord::new("E", PRIMARY);
+		if self.inline_code == old_inline_code && self.emoji_picker == old_inline_code {
+			self.inline_code = Self::default().inline_code;
+		}
+	}
+
 	pub fn chord(&self, action: KeybindAction) -> &KeyChord {
 		match action {
 			KeybindAction::ShowShortcuts => &self.show_shortcuts,
@@ -246,6 +263,7 @@ impl Keybinds {
 			KeybindAction::SendMessage => &self.send_message,
 			KeybindAction::InsertNewLine => &self.insert_new_line,
 			KeybindAction::EditLastMessage => &self.edit_last_message,
+			KeybindAction::EmojiPicker => &self.emoji_picker,
 			KeybindAction::Bold => &self.bold,
 			KeybindAction::Italic => &self.italic,
 			KeybindAction::Underline => &self.underline,
@@ -270,6 +288,7 @@ impl Keybinds {
 			KeybindAction::SendMessage => &mut self.send_message,
 			KeybindAction::InsertNewLine => &mut self.insert_new_line,
 			KeybindAction::EditLastMessage => &mut self.edit_last_message,
+			KeybindAction::EmojiPicker => &mut self.emoji_picker,
 			KeybindAction::Bold => &mut self.bold,
 			KeybindAction::Italic => &mut self.italic,
 			KeybindAction::Underline => &mut self.underline,
@@ -352,6 +371,39 @@ mod tests {
 		assert!(bindings.is_valid());
 		bindings.send_message = KeyChord::new("", 0);
 		assert!(!bindings.is_valid());
+	}
+
+	/// Regression: Ctrl+E inserted inline code instead of opening the emoji picker, and saved
+	/// preferences from before the picker binding kept that old default.
+	#[test]
+	fn ctrl_e_belongs_to_the_emoji_picker_including_for_older_preferences() {
+		let defaults = Keybinds::default();
+		assert_eq!(defaults.emoji_picker, KeyChord::new("E", PRIMARY));
+		assert_eq!(
+			defaults.conflict(
+				&defaults.emoji_picker,
+				Some(KeybindAction::EmojiPicker),
+				None
+			),
+			None
+		);
+		// Preferences saved before this action existed load inline code on Ctrl+E and the
+		// missing picker field as its default, Ctrl+E.
+		let mut saved = Keybinds {
+			inline_code: KeyChord::new("E", PRIMARY),
+			..Default::default()
+		};
+		saved.upgrade();
+		assert_eq!(saved.emoji_picker, KeyChord::new("E", PRIMARY));
+		assert_eq!(saved.inline_code, defaults.inline_code);
+		// A binding the user picked for inline code survives the upgrade.
+		let mut chosen = Keybinds {
+			inline_code: KeyChord::new("J", PRIMARY),
+			..Default::default()
+		};
+		chosen.upgrade();
+		assert_eq!(chosen.inline_code, KeyChord::new("J", PRIMARY));
+		assert!(saved.is_valid() && chosen.is_valid());
 	}
 
 	#[test]

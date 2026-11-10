@@ -3767,6 +3767,22 @@ impl MessagingUi {
                                     .color(if count_before >= max_content { colors.danger } else { colors.muted }),
                             );
                         }
+                        // The Emoji Picker binding (Ctrl+E by default) works while writing or while
+                        // the picker has focus. It is matched exactly and before text formatting,
+                        // so Ctrl+E never also inserts inline-code backticks.
+                        if keyboard_enabled
+                            && !application_command
+                            && !self.ime_active
+                            && !ime_this_frame
+                            && (self.emoji_picker.is_open() || ctx.memory(|m| m.has_focus(composer_id)))
+                            && ctx.input_mut(|input| {
+                                self.keybinds
+                                    .chords(model::KeybindAction::EmojiPicker)
+                                    .any(|chord| crate::keybinds::pressed_exact(input, chord))
+                            })
+                        {
+                            self.emoji_picker.toggle_emoji();
+                        }
                         let pick = ui
                             .add_enabled_ui(!application_command && !self.ime_active && !ime_this_frame, |ui| {
                                 self.emoji_picker.hide_nitro_emojis = self.hide_nitro_emojis;
@@ -7009,6 +7025,59 @@ mod composer_tests {
 			repeat: false,
 			modifiers: egui::Modifiers::NONE,
 		}
+	}
+
+	/// Regression: Ctrl+E inserted inline-code backticks instead of opening the emoji picker.
+	#[test]
+	fn ctrl_e_toggles_the_emoji_picker_and_inline_code_keeps_its_own_binding() {
+		let key = |modifiers| egui::Event::Key {
+			key: egui::Key::E,
+			physical_key: None,
+			pressed: true,
+			repeat: false,
+			modifiers,
+		};
+		let ctx = egui::Context::default();
+		let mut view = MessagingUi {
+			focus_switched_composer: true,
+			..Default::default()
+		};
+		let mut state = edit_state();
+		let channel = state.selected.unwrap();
+		state.drafts.insert(channel, "hello".into());
+		for _ in 0..2 {
+			edit_frame(&ctx, &mut view, &mut state, vec![]);
+		}
+		edit_frame(
+			&ctx,
+			&mut view,
+			&mut state,
+			vec![key(egui::Modifiers::COMMAND)],
+		);
+		assert!(view.emoji_picker.is_open());
+		assert_eq!(state.drafts[&channel], "hello");
+		// Pressed again while the picker has focus, it closes the picker.
+		edit_frame(
+			&ctx,
+			&mut view,
+			&mut state,
+			vec![key(egui::Modifiers::COMMAND)],
+		);
+		assert!(!view.emoji_picker.is_open());
+		assert_eq!(state.drafts[&channel], "hello");
+		// Inline code moved to Ctrl+Shift+E and still formats the draft.
+		view.focus_switched_composer = true;
+		for _ in 0..2 {
+			edit_frame(&ctx, &mut view, &mut state, vec![]);
+		}
+		edit_frame(
+			&ctx,
+			&mut view,
+			&mut state,
+			vec![key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT)],
+		);
+		assert!(!view.emoji_picker.is_open());
+		assert_eq!(state.drafts[&channel], "hello``");
 	}
 
 	#[test]
