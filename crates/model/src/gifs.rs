@@ -56,6 +56,10 @@ fn plain_https_path(url: &str, hosts: &[&str]) -> bool {
 		})
 }
 
+/// Tenor serves its files from numbered media hosts as well as `media.tenor.com`;
+/// links such as `media1.tenor.com/m/…/name.gif` are what Discord embeds and favorites keep.
+const TENOR_MEDIA: [&str; 3] = ["media.tenor.com", "media1.tenor.com", "c.tenor.com"];
+
 /// KLIPY results and previously saved Tenor favorites may be shared.
 pub fn valid_gif_url(url: &str) -> bool {
 	plain_https_path(
@@ -66,15 +70,16 @@ pub fn valid_gif_url(url: &str) -> bool {
 			"static1.klipy.com",
 			"static2.klipy.com",
 			"tenor.com",
-			"media.tenor.com",
+			TENOR_MEDIA[0],
+			TENOR_MEDIA[1],
+			TENOR_MEDIA[2],
 		],
 	)
 }
 
 /// Allow only provider media hosts and supported image formats.
 pub fn valid_gif_preview(url: &str) -> bool {
-	(plain_https_path(url, &["media.tenor.com", "c.tenor.com"])
-		&& (url.ends_with(".png") || url.ends_with(".gif")))
+	(plain_https_path(url, &TENOR_MEDIA) && (url.ends_with(".png") || url.ends_with(".gif")))
 		|| (plain_https_path(
 			url,
 			&["static.klipy.com", "static1.klipy.com", "static2.klipy.com"],
@@ -88,8 +93,9 @@ pub fn valid_gif_video_source(url: &str) -> bool {
 	plain_https_path(
 		url,
 		&[
-			"media.tenor.com",
-			"c.tenor.com",
+			TENOR_MEDIA[0],
+			TENOR_MEDIA[1],
+			TENOR_MEDIA[2],
 			"static.klipy.com",
 			"static1.klipy.com",
 			"static2.klipy.com",
@@ -252,6 +258,11 @@ mod tests {
 		assert!(!valid_gif_preview("https://static.klipy.com/x.mp4"));
 		assert!(!valid_gif_url("https://klipy.com.evil.test/gifs/x"));
 		assert!(valid_gif_url("https://media.tenor.com/x/tenor.gif"));
+		// Regression: Tenor's numbered media host was refused, so its GIFs never played.
+		assert!(valid_gif_url(
+			"https://media1.tenor.com/m/rfhdy0TtiAoAAAAC/horse-derp.gif"
+		));
+		assert!(!valid_gif_url("https://media1.tenor.com.evil.test/x.gif"));
 		for url in [
 			"http://tenor.com/view/x",
 			"https://tenor.com.evil.example/view/x",

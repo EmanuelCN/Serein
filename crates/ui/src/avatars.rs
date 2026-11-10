@@ -1647,9 +1647,41 @@ impl Avatars {
 						.unwrap_or_default(),
 				})
 			});
+		// A link straight to a GIF (a Tenor or Discord file, often a saved GIF) is itself the
+		// animation. Discord embeds it as a clip plus a still poster; when the clip cannot
+		// play here, the linked GIF plays instead of the poster's single frame.
+		let linked = embed
+			.url
+			.as_deref()
+			.filter(|url| {
+				self.animate_gifs
+					&& embed.kind == "gifv"
+					&& (model::valid_gif_url(url) || model::valid_discord_media_url(url))
+					&& url
+						.split(['?', '#'])
+						.next()
+						.is_some_and(|path| path.to_ascii_lowercase().ends_with(".gif"))
+			})
+			.map(|url| {
+				let sized = embed
+					.video
+					.as_ref()
+					.filter(|video| video.width > 0)
+					.or(poster);
+				model::EmbedMedia {
+					url: Some(url.to_owned()),
+					proxy_url: None,
+					width: sized.map_or(0, |media| media.width),
+					height: sized.map_or(0, |media| media.height),
+					placeholder: poster
+						.map(|poster| poster.placeholder.clone())
+						.unwrap_or_default(),
+				}
+			});
 		let media = video
 			.as_ref()
 			.or(original.as_ref())
+			.or(linked.as_ref())
 			.or(embed.image.as_ref())
 			.or(embed.thumbnail.as_ref())
 			.or(embed.video.as_ref());
@@ -2897,6 +2929,47 @@ mod tests {
 		assert_eq!(fallback, [format!("media:is:64x32:{poster}")]);
 		// The rejected clip is never requested again.
 		assert!(!frame(&mut images).iter().any(|key| key.ends_with(".mp4")));
+	}
+
+	/// Regression: a link straight to a Tenor GIF showed its still poster when the clip could
+	/// not play; the linked GIF animates instead.
+	#[test]
+	fn a_gif_link_plays_the_gif_when_its_clip_cannot() {
+		let ctx = egui::Context::default();
+		let mut images = Avatars::default();
+		images.set_animation(true);
+		let gif = "https://media1.tenor.com/m/rfhdy0TtiAoAAAAC/horse-derp.gif";
+		let embed = model::Embed {
+			kind: "gifv".into(),
+			url: Some(gif.into()),
+			thumbnail: Some(model::EmbedMedia {
+				url: Some("https://media.tenor.com/rfhdy0TtiAoAAAAe/horse-derp.png".into()),
+				width: 220,
+				height: 160,
+				..Default::default()
+			}),
+			video: Some(model::EmbedMedia {
+				url: Some("https://media.tenor.com/rfhdy0TtiAoAAAPo/horse-derp.mp4".into()),
+				width: 220,
+				height: 160,
+				..Default::default()
+			}),
+			..Default::default()
+		};
+		let frame = |images: &mut Avatars| {
+			ctx.run_ui(Default::default(), |ui| {
+				images.show_gif_embed(ui, &embed, None, egui::vec2(320.0, 320.0), false);
+			})
+			.drop_without_applying_deltas();
+			images.take_requests()
+		};
+		let clip = frame(&mut images);
+		assert!(clip[0].ends_with(".mp4"), "{clip:?}");
+		images.accept(&ctx, clip[0].clone(), None);
+		assert_eq!(frame(&mut images), [format!("media:ia:220x160:{gif}")]);
+		// With animation off the poster stays the still, as before.
+		images.set_animation(false);
+		assert!(frame(&mut images).iter().all(|key| !key.ends_with(".gif")));
 	}
 
 	#[test]
