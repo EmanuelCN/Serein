@@ -1,0 +1,68 @@
+{
+  "date": "2026-11-14",
+  "original_decode_measured_on": "2026-11-13",
+  "baseline_commit": "f19193d9a4ab78694f8161942f0d9df93b6b961f",
+  "profile": "debug/test; debug info disabled; incremental disabled; one build job",
+  "samples_per_size": 1,
+  "original": {
+    "encoded_bytes": 34766782,
+    "width": 280,
+    "height": 498,
+    "frames": 361,
+    "authored_frame_delay_ms": 50,
+    "loop_seconds": 18.05,
+    "authored_fps": 20
+  },
+  "baseline_cached_mp4": {
+    "source_frames": 599,
+    "source_loop_seconds": 19.967,
+    "inline_retained_frames": 136,
+    "inline_loop_seconds": 19.959,
+    "viewer_retained_frames": 108,
+    "viewer_loop_seconds": 19.983,
+    "provenance": "../gifv-preview/measurements.json; prior local workload, not a native presentation counter"
+  },
+  "new_original_decode": {
+    "inline": {
+      "frames": 361,
+      "loop_seconds": 18.05,
+      "maximum_hold_ms": 50,
+      "first_frame_ms": 19.3563,
+      "full_decode_ms": 5537.3193,
+      "reserved_bytes": 38259454,
+      "byte_limit": 41943040
+    },
+    "viewer": {
+      "frames": 361,
+      "loop_seconds": 18.05,
+      "maximum_hold_ms": 50,
+      "first_frame_ms": 11.2286,
+      "full_decode_ms": 2768.6735,
+      "reserved_bytes": 39786622,
+      "byte_limit": 100663296
+    }
+  },
+  "synthetic_native_presentation": {
+    "workload": "40 generated GIF frames, 50 ms each, 2-second loop; same stream scheduler and native WGPU texture handoff",
+    "warmup_seconds": 2,
+    "measured_seconds": 5.0032,
+    "presented_revisions": 100,
+    "skipped_revisions": 0,
+    "measured_fps": 19.987,
+    "reserved_bytes": 238533,
+    "samples": 1
+  },
+  "original_native_presentation": {
+    "measured_on": "2026-11-14",
+    "workload": "Local reported horse GIF, original source, inline fit 368, native WGPU texture handoff; sample crosses an 18.05-second loop boundary",
+    "warmup_seconds": 2,
+    "measured_seconds": 20.0005,
+    "presented_revisions": 400,
+    "skipped_revisions": 0,
+    "measured_fps_rounded": 20.000,
+    "longest_presented_gap_ms": 51.569,
+    "reserved_bytes": 38259454,
+    "samples": 1
+  },
+  "limitations": "Original decode timing excludes network and presentation; native cadence counters are separate. No release, package, live Discord session, GPU scanout, process RSS or idle CPU measurements."
+}

@@ -175,50 +175,7 @@ impl<D: AsRef<[u8]>> Picture<D> {
 		let rgba = match self.layout {
 			Layout::Rgba => data.to_vec(),
 			Layout::Nv12 | Layout::I420 => {
-				let rows = self.color.coefficients();
-				let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
-				let (luma, chroma) = data.split_at(width * height);
-				let (first, second) = chroma.split_at(chroma_width * chroma_height);
-				let fetch = |x: usize, y: usize| {
-					let at = y * chroma_width + x;
-					match self.layout {
-						Layout::Nv12 => [chroma[at * 2], chroma[at * 2 + 1]],
-						_ => [first[at], second[at]],
-					}
-					.map(f32::from)
-				};
-				// The GPU samples chroma bilinearly at each pixel centre with clamped edges;
-				// the same taps here keep posters and fallback frames identical up to rounding.
-				let columns = chroma_taps(width, chroma_width);
-				let lines = chroma_taps(height, chroma_height);
-				let mut rgba = vec![0; width * height * 4];
-				for (y, row) in rgba.chunks_exact_mut(width * 4).enumerate() {
-					let (top, bottom, down) = lines[y];
-					for (x, pixel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-						let (left, right, across) = columns[x];
-						let blend = |a: [f32; 2], b: [f32; 2], t: f32| {
-							[a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
-						};
-						let [cb, cr] = blend(
-							blend(fetch(left, top), fetch(right, top), across),
-							blend(fetch(left, bottom), fetch(right, bottom), across),
-							down,
-						);
-						let sample = [
-							f32::from(luma[y * width + x]) / 255.0,
-							cb / 255.0,
-							cr / 255.0,
-						];
-						let channel = |row: [f32; 4]| {
-							let value = row[0] * sample[0]
-								+ row[1] * sample[1] + row[2] * sample[2]
-								+ row[3];
-							(value * 255.0).round().clamp(0.0, 255.0) as u8
-						};
-						*pixel = [channel(rows[0]), channel(rows[1]), channel(rows[2]), 255];
-					}
-				}
-				rgba
+				planar_to_rgba(self.layout, self.color, width, height, data)
 			}
 		};
 		Some(super::rotate_rgba(
@@ -228,6 +185,80 @@ impl<D: AsRef<[u8]>> Picture<D> {
 			u32::from(self.rotation),
 		))
 	}
+}
+
+/// The YUV to RGBA conversion behind [`Picture::to_rgba`]. It is deliberately not generic, so
+/// it is compiled once in this crate, with this crate's optimization, instead of in every
+/// caller's crate (an unoptimized application build converted each frame several times slower).
+fn planar_to_rgba(
+	layout: Layout,
+	color: Color,
+	width: usize,
+	height: usize,
+	data: &[u8],
+) -> Vec<u8> {
+	let rows = color.coefficients();
+	let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
+	let (luma, chroma) = data.split_at(width * height);
+	let (first, second) = chroma.split_at(chroma_width * chroma_height);
+	let nv12 = layout == Layout::Nv12;
+	let fetch = |x: usize, y: usize| -> [f32; 2] {
+		let at = y * chroma_width + x;
+		if nv12 {
+			[f32::from(chroma[at * 2]), f32::from(chroma[at * 2 + 1])]
+		} else {
+			[f32::from(first[at]), f32::from(second[at])]
+		}
+	};
+	// The GPU samples chroma bilinearly at each pixel centre with clamped edges;
+	// the same taps here keep posters and fallback frames identical up to rounding.
+	let columns = chroma_taps(width, chroma_width);
+	let lines = chroma_taps(height, chroma_height);
+	// Each chroma row is interpolated across once, at every output column, and
+	// shared by the output rows that sample it; only the vertical blend is per pixel.
+	// The arithmetic and its order are unchanged, so results are identical.
+	let across = |line: usize, out: &mut Vec<[f32; 2]>| {
+		out.clear();
+		out.extend(columns.iter().map(|&(left, right, t)| {
+			let (a, b) = (fetch(left, line), fetch(right, line));
+			[a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+		}));
+	};
+	let (mut top_row, mut bottom_row) = (Vec::with_capacity(width), Vec::with_capacity(width));
+	let mut cached = (usize::MAX, usize::MAX);
+	let mut rgba = vec![0; width * height * 4];
+	for (y, row) in rgba.chunks_exact_mut(width * 4).enumerate() {
+		let (top, bottom, down) = lines[y];
+		if cached.0 != top {
+			if cached.1 == top {
+				std::mem::swap(&mut top_row, &mut bottom_row);
+				cached.1 = usize::MAX;
+			} else {
+				across(top, &mut top_row);
+			}
+			cached.0 = top;
+		}
+		if cached.1 != bottom {
+			across(bottom, &mut bottom_row);
+			cached.1 = bottom;
+		}
+		let luma_row = &luma[y * width..(y + 1) * width];
+		for (x, pixel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+			let (a, b) = (top_row[x], bottom_row[x]);
+			let cb = a[0] + (b[0] - a[0]) * down;
+			let cr = a[1] + (b[1] - a[1]) * down;
+			let sample = [f32::from(luma_row[x]) / 255.0, cb / 255.0, cr / 255.0];
+			for (channel, coefficients) in pixel.iter_mut().zip(&rows) {
+				let value = coefficients[0] * sample[0]
+					+ coefficients[1] * sample[1]
+					+ coefficients[2] * sample[2]
+					+ coefficients[3];
+				*channel = (value * 255.0).round().clamp(0.0, 255.0) as u8;
+			}
+			pixel[3] = 255;
+		}
+	}
+	rgba
 }
 
 /// Bilinear taps (low, high, weight of high) mapping each of `output` pixel centres onto a
@@ -306,6 +337,72 @@ mod tests {
 			},
 		));
 		assert!(red[0] >= 253 && red[1] <= 2 && red[2] <= 2, "{red:?}");
+	}
+
+	/// The row-cached conversion matches the GPU-sampler formula, pixel by pixel, on a picture
+	/// tall enough to reuse, swap and replace cached chroma rows, for both planar layouts.
+	#[test]
+	fn multi_row_conversion_matches_the_per_pixel_formula() {
+		let (width, height) = (5usize, 7usize);
+		let (chroma_width, chroma_height) = (3usize, 4usize);
+		let luma: Vec<u8> = (0..width * height)
+			.map(|i| (i * 37 % 220 + 16) as u8)
+			.collect();
+		let cb: Vec<u8> = (0..chroma_width * chroma_height)
+			.map(|i| (i * 53 % 200 + 20) as u8)
+			.collect();
+		let cr: Vec<u8> = (0..chroma_width * chroma_height)
+			.map(|i| (i * 29 % 180 + 40) as u8)
+			.collect();
+		let color = Color::WEBRTC;
+		let rows = color.coefficients();
+		let (columns, lines) = (
+			chroma_taps(width, chroma_width),
+			chroma_taps(height, chroma_height),
+		);
+		let mut expected = Vec::new();
+		for y in 0..height {
+			for x in 0..width {
+				let (left, right, across) = columns[x];
+				let (top, bottom, down) = lines[y];
+				let at =
+					|plane: &[u8], cx: usize, cy: usize| f32::from(plane[cy * chroma_width + cx]);
+				let blend = |a: f32, b: f32, t: f32| a + (b - a) * t;
+				let sample = |plane: &[u8]| {
+					blend(
+						blend(at(plane, left, top), at(plane, right, top), across),
+						blend(at(plane, left, bottom), at(plane, right, bottom), across),
+						down,
+					) / 255.0
+				};
+				let yuv = [
+					f32::from(luma[y * width + x]) / 255.0,
+					sample(&cb),
+					sample(&cr),
+				];
+				for row in rows {
+					let value = row[0] * yuv[0] + row[1] * yuv[1] + row[2] * yuv[2] + row[3];
+					expected.push((value * 255.0).round().clamp(0.0, 255.0) as u8);
+				}
+				expected.push(255);
+			}
+		}
+		let mut i420 = luma.clone();
+		i420.extend(&cb);
+		i420.extend(&cr);
+		let mut nv12 = luma;
+		nv12.extend(cb.iter().zip(&cr).flat_map(|(b, r)| [*b, *r]));
+		for (layout, data) in [(Layout::I420, i420), (Layout::Nv12, nv12)] {
+			let picture = Picture {
+				width: width as u32,
+				height: height as u32,
+				layout,
+				color,
+				rotation: 0,
+				data,
+			};
+			assert_eq!(picture.to_rgba().unwrap().2, expected, "{layout:?}");
+		}
 	}
 
 	#[test]

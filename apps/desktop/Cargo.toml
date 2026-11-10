@@ -80,6 +80,10 @@ name = "profile_preview"
 required-features = ["demo"]
 
 [[example]]
+name = "gif_stream"
+required-features = ["demo"]
+
+[[example]]
 name = "gif_favorites"
 required-features = ["demo"]
 

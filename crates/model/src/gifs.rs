@@ -56,6 +56,13 @@ fn plain_https_path(url: &str, hosts: &[&str]) -> bool {
 		})
 }
 
+/// Original public Tenor GIFs. The numbered host is the same publisher's media CDN;
+/// admission here is only for bounded animation decoding, not arbitrary external fetches.
+pub fn valid_tenor_gif_source(url: &str) -> bool {
+	plain_https_path(url, &["media.tenor.com", "media1.tenor.com", "c.tenor.com"])
+		&& url.ends_with(".gif")
+}
+
 /// KLIPY results and previously saved Tenor favorites may be shared.
 pub fn valid_gif_url(url: &str) -> bool {
 	plain_https_path(
@@ -237,6 +244,20 @@ mod tests {
 
 	#[test]
 	fn gif_hosts_and_pages_are_bounded() {
+		assert!(valid_tenor_gif_source(
+			"https://media1.tenor.com/m/synthetic/wave.gif"
+		));
+		for source in [
+			"http://media1.tenor.com/m/synthetic/wave.gif",
+			"https://media1.tenor.com.evil.test/m/synthetic/wave.gif",
+			"https://user@media1.tenor.com/m/synthetic/wave.gif",
+			"https://media1.tenor.com:443/m/synthetic/wave.gif",
+			"https://media1.tenor.com/m/../wave.gif",
+			"https://media1.tenor.com/m/wave.gif?source=secret",
+			"https://example.com/m/wave.gif",
+		] {
+			assert!(!valid_tenor_gif_source(source), "{source}");
+		}
 		assert!(gif("a1").valid());
 		let mut klipy = gif("klipy-1");
 		klipy.url = "https://klipy.com/gifs/synthetic-wave".into();

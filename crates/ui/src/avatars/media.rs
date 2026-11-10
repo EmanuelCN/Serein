@@ -283,6 +283,13 @@ enum Attempt {
 
 enum Pixels {
 	Still(TextureHandle),
+	Streaming {
+		still: TextureHandle,
+		stream: super::stream::AnimationStream,
+		texture: Option<TextureHandle>,
+		sequence: u64,
+		played: Instant,
+	},
 	Playing {
 		still: TextureHandle,
 		animation: Animation,
@@ -319,19 +326,23 @@ struct Held {
 
 impl Held {
 	fn playing(&self) -> bool {
-		matches!(self.pixels, Pixels::Playing { .. })
+		matches!(
+			self.pixels,
+			Pixels::Playing { .. } | Pixels::Streaming { .. }
+		)
 	}
 	fn bytes(&self) -> usize {
 		match &self.pixels {
 			Pixels::Still(still) => still.byte_size(),
 			Pixels::Playing { still, animation } => still.byte_size() + animation.bytes,
+			Pixels::Streaming { still, stream, .. } => still.byte_size() + stream.reserved_bytes(),
 		}
 	}
 	fn pool(&self) -> Pool {
 		match (self.lane, &self.pixels) {
 			(Lane::Viewer, _) => Pool::Viewer,
 			(Lane::Inline, Pixels::Still(_)) => Pool::Stills,
-			(Lane::Inline, Pixels::Playing { .. }) => Pool::Frames,
+			(Lane::Inline, Pixels::Playing { .. } | Pixels::Streaming { .. }) => Pool::Frames,
 		}
 	}
 }
@@ -389,6 +400,7 @@ impl Slot {
 			.filter_map(|held| match &held.pixels {
 				Pixels::Playing { animation, .. } => Some((held.size.longest(), animation.started)),
 				Pixels::Still(_) => None,
+				Pixels::Streaming { .. } => None,
 			})
 			.max_by_key(|(longest, _)| *longest)
 			.map_or(now, |(_, started)| started)
@@ -470,6 +482,17 @@ pub(crate) struct MediaLibrary {
 }
 
 impl MediaLibrary {
+	pub(super) fn defer(&mut self, rendition: Rendition) {
+		if let Some(slot) = self.slots.get_mut(&rendition.source)
+			&& slot.pending(rendition.motion, rendition.size)
+		{
+			slot.record(
+				rendition.motion,
+				rendition.size,
+				Attempt::Failed(Instant::now()),
+			);
+		}
+	}
 	fn source(&mut self, raw: &str) -> Option<Source> {
 		if let Some(source) = self.canonical.get(raw) {
 			return source.clone();
@@ -545,6 +568,19 @@ impl MediaLibrary {
 		lane: Lane,
 		pass: u64,
 	) -> Option<TextureHandle> {
+		// A failed stream may use the embed's video fallback. An expired lease simply reloads
+		// from the encoded cache when visible again.
+		let slot = self.slots.get_mut(source)?;
+		if let Pixels::Streaming { still, stream, .. } = &slot.held.get(index)?.pixels
+			&& let Some(failed) = stream.closed()
+		{
+			if failed {
+				slot.learned = Learned::Unplayable;
+			}
+			let still = still.clone();
+			slot.held[index].pixels = Pixels::Still(still);
+			ctx.request_repaint();
+		}
 		self.clock += 1;
 		let held = self.slots.get_mut(source)?.held.get_mut(index)?;
 		held.used = self.clock;
@@ -559,6 +595,37 @@ impl MediaLibrary {
 				.then(|| animation.advance(ctx))
 				.flatten()
 				.unwrap_or_else(|| still.clone()),
+			Pixels::Streaming {
+				still,
+				stream,
+				texture,
+				sequence,
+				played,
+			} => {
+				if playing {
+					*played = Instant::now();
+					// Long authored holds and network buffering still have a visible consumer.
+					ctx.request_repaint_after(Duration::from_millis(100));
+					if let Some((next, image)) = stream.frame()
+						&& next != *sequence
+					{
+						if let Some(texture) = texture {
+							texture.set(image, egui::TextureOptions::LINEAR);
+						} else {
+							*texture = Some(ctx.load_texture(
+								"streaming-gif",
+								image,
+								egui::TextureOptions::LINEAR,
+							));
+						}
+						*sequence = next;
+					}
+					texture.clone().unwrap_or_else(|| still.clone())
+				} else {
+					stream.pause();
+					still.clone()
+				}
+			}
 		})
 	}
 
@@ -601,7 +668,10 @@ impl MediaLibrary {
 				&& image.resolution()[1] <= limit
 				&& image.pixels().len() == image.resolution()[0] * image.resolution()[1]
 		}) else {
-			if motion == Motion::Animated && is_motion_video(source.as_str()) {
+			if motion == Motion::Animated
+				&& (is_motion_video(source.as_str())
+					|| model::valid_tenor_gif_source(source.as_str()))
+			{
 				// Retrying cannot help a clip this decoder rejects, and it is not cached on disk.
 				slot.learned = Learned::Unplayable;
 				slot.forget(motion, size);
@@ -623,7 +693,9 @@ impl MediaLibrary {
 			Some(index) => {
 				let held = &mut slot.held[index];
 				match &mut held.pixels {
-					Pixels::Still(still) | Pixels::Playing { still, .. } => *still = texture,
+					Pixels::Still(still)
+					| Pixels::Playing { still, .. }
+					| Pixels::Streaming { still, .. } => *still = texture,
 				}
 				held.used = used;
 				held.painted = Instant::now();
@@ -716,7 +788,9 @@ impl MediaLibrary {
 		let started = slot.carried_start(size, now);
 		let held = &mut slot.held[index];
 		let still = match &held.pixels {
-			Pixels::Still(still) | Pixels::Playing { still, .. } => still.clone(),
+			Pixels::Still(still)
+			| Pixels::Playing { still, .. }
+			| Pixels::Streaming { still, .. } => still.clone(),
 		};
 		held.pixels = Pixels::Playing {
 			still,
@@ -733,6 +807,108 @@ impl MediaLibrary {
 		held.arrived = now;
 		let pool = held.pool();
 		self.evict(pool, (&source, motion, size));
+	}
+
+	pub(super) fn accept_stream(
+		&mut self,
+		rendition: Rendition,
+		stream: super::stream::AnimationStream,
+	) {
+		let Rendition {
+			source,
+			motion,
+			size,
+			lane,
+		} = rendition;
+		let valid = motion == Motion::Animated
+			&& stream.edge() <= size.longest()
+			&& stream.reserved_bytes() <= lane.frame_bytes()
+			&& stream.frame().is_some();
+		let Some(slot) = self.slots.get_mut(&source) else {
+			return;
+		};
+		if !slot.pending(motion, size) {
+			return;
+		}
+		slot.forget(motion, size);
+		let Some(index) = slot.index(motion, size) else {
+			return;
+		};
+		if !valid {
+			slot.record(motion, size, Attempt::Failed(Instant::now()));
+			return;
+		}
+		let pool = if lane == Lane::Viewer {
+			Pool::Viewer
+		} else {
+			Pool::Frames
+		};
+		let needed = stream.reserved_bytes()
+			+ match &slot.held[index].pixels {
+				Pixels::Still(still)
+				| Pixels::Playing { still, .. }
+				| Pixels::Streaming { still, .. } => still.byte_size(),
+			};
+		let replaced = if slot.held[index].pool() == pool {
+			(slot.held[index].bytes(), 1)
+		} else {
+			(0, 0)
+		};
+		// Never let a newly loaded long GIF evict another animation still on screen and cause
+		// a decode/download cycle. A newcomer that cannot fit keeps its still and backs off.
+		loop {
+			let (used, count) = self
+				.slots
+				.values()
+				.flat_map(|slot| &slot.held)
+				.filter(|held| held.pool() == pool)
+				.fold((0, 0), |(bytes, count), held| {
+					(bytes + held.bytes(), count + 1)
+				});
+			let (byte_limit, count_limit) = pool.limits();
+			if used - replaced.0 + needed <= byte_limit && count - replaced.1 < count_limit {
+				break;
+			}
+			let oldest = self
+				.slots
+				.iter()
+				.flat_map(|(source, slot)| {
+					slot.held
+						.iter()
+						.enumerate()
+						.map(move |(index, held)| (source, index, held))
+				})
+				.filter(|(s, _, held)| {
+					*s != &source
+						&& held.pool() == pool
+						&& held.painted.elapsed() >= Duration::from_millis(500)
+				})
+				.min_by_key(|(_, _, held)| held.used)
+				.map(|(s, index, _)| (s.clone(), index));
+			let Some((old, index)) = oldest else {
+				self.slots.get_mut(&source).unwrap().record(
+					motion,
+					size,
+					Attempt::Failed(Instant::now()),
+				);
+				return;
+			};
+			self.slots.get_mut(&old).unwrap().held.remove(index);
+		}
+		let held = &mut self.slots.get_mut(&source).unwrap().held[index];
+		let still = match &held.pixels {
+			Pixels::Still(still)
+			| Pixels::Playing { still, .. }
+			| Pixels::Streaming { still, .. } => still.clone(),
+		};
+		held.pixels = Pixels::Streaming {
+			still,
+			stream,
+			texture: None,
+			sequence: 0,
+			played: Instant::now(),
+		};
+		held.arrived = Instant::now();
 	}
 
 	fn evict(&mut self, pool: Pool, keep: (&Source, Motion, Size)) {
@@ -793,6 +969,11 @@ impl MediaLibrary {
 				{
 					held.pixels = Pixels::Still(still.clone());
 				}
+				if let Pixels::Streaming { still, played, .. } = &held.pixels
+					&& now.saturating_duration_since(*played) >= super::IDLE_FRAMES
+				{
+					held.pixels = Pixels::Still(still.clone());
+				}
 				true
 			});
 		}
@@ -807,6 +988,9 @@ impl MediaLibrary {
 					(animation.played + super::IDLE_FRAMES).min(held.painted + IDLE_TEXTURES)
 				}
 				Pixels::Still(_) => held.painted + IDLE_TEXTURES,
+				Pixels::Streaming { played, .. } => {
+					(*played + super::IDLE_FRAMES).min(held.painted + IDLE_TEXTURES)
+				}
 			})
 			.min()
 	}
@@ -814,9 +998,13 @@ impl MediaLibrary {
 	/// False once this clip failed to decode, so a gifv embed can use its GIF or poster instead.
 	pub(super) fn playable(&mut self, raw: &str) -> bool {
 		self.source(raw).is_none_or(|source| {
-			self.slots
-				.get(&source)
-				.is_none_or(|slot| slot.learned != Learned::Unplayable)
+			self.slots.get(&source).is_none_or(|slot| {
+				slot.learned != Learned::Unplayable
+					&& !slot.attempts.iter().any(|(motion, _, attempt)| {
+						*motion == Motion::Animated
+							&& matches!(attempt, Attempt::Failed(at) if at.elapsed() < RETRY)
+					})
+			})
 		})
 	}
 
@@ -867,7 +1055,9 @@ impl MediaLibrary {
 	}
 	pub(super) fn texture_id(&self, rendition: &Rendition) -> Option<egui::TextureId> {
 		match &self.find(rendition)?.pixels {
-			Pixels::Still(still) | Pixels::Playing { still, .. } => Some(still.id()),
+			Pixels::Still(still)
+			| Pixels::Playing { still, .. }
+			| Pixels::Streaming { still, .. } => Some(still.id()),
 		}
 	}
 	pub(super) fn animation(&mut self, rendition: &Rendition) -> Option<&mut Animation> {
@@ -876,6 +1066,7 @@ impl MediaLibrary {
 		match &mut slot.held[index].pixels {
 			Pixels::Playing { animation, .. } => Some(animation),
 			Pixels::Still(_) => None,
+			Pixels::Streaming { .. } => None,
 		}
 	}
 	pub(super) fn bytes(&self) -> usize {
@@ -928,6 +1119,7 @@ fn pick(media: &model::EmbedMedia, animate: bool) -> Option<(&str, bool)> {
 		let p = path(url);
 		animate
 			&& (model::valid_gif_url(url)
+				|| model::valid_tenor_gif_source(url)
 				|| url.starts_with("https://cdn.discordapp.com/")
 				|| url.starts_with("https://media.discordapp.net/"))
 			&& (p.ends_with(".gif") || p.ends_with(".webp"))
@@ -945,6 +1137,114 @@ fn pick(media: &model::EmbedMedia, animate: bool) -> Option<(&str, bool)> {
 #[cfg(test)]
 mod retention_tests {
 	use super::*;
+
+	fn streaming(
+		library: &mut MediaLibrary,
+		ctx: &egui::Context,
+		id: usize,
+		lane: Lane,
+		bytes: usize,
+	) -> (Rendition, super::super::stream::AnimationProducer) {
+		let source = library
+			.source(&format!("https://media1.tenor.com/synthetic/{id}.gif"))
+			.unwrap();
+		let rendition = Rendition {
+			source: source.clone(),
+			motion: Motion::Animated,
+			size: Size::Longest(Edge(16)),
+			lane,
+		};
+		library
+			.slot(&source)
+			.record(Motion::Animated, rendition.size, Attempt::Pending);
+		let image = ColorImage::filled([8, 8], Color32::RED);
+		library.accept_still(ctx, rendition.clone(), Some(image.clone()));
+		let (stream, producer) = super::super::stream::AnimationStream::channel(16, bytes);
+		assert!(producer.publish(Arc::new(image)));
+		library.accept_stream(rendition.clone(), stream);
+		(rendition, producer)
+	}
+
+	#[test]
+	fn stream_uploads_reuse_the_texture_and_viewer_close_cancels() {
+		let ctx = egui::Context::default();
+		let mut library = MediaLibrary::default();
+		let (rendition, producer) = streaming(&mut library, &ctx, 1, Lane::Viewer, 4096);
+		let texture = library
+			.texture(&rendition.source, 0, &ctx, true, Lane::Viewer, 1)
+			.unwrap();
+		assert!(producer.publish(Arc::new(ColorImage::filled([8, 8], Color32::BLUE))));
+		assert_eq!(
+			library
+				.texture(&rendition.source, 0, &ctx, true, Lane::Viewer, 2)
+				.unwrap()
+				.id(),
+			texture.id()
+		);
+		assert!(matches!(
+			library.find(&rendition).unwrap().pixels,
+			Pixels::Streaming { sequence: 2, .. }
+		));
+		library.texture(&rendition.source, 0, &ctx, false, Lane::Viewer, 3);
+		assert_eq!(
+			producer.activity(Instant::now()),
+			Some(super::super::stream::StreamActivity::Paused)
+		);
+		library.end_frame();
+		assert_eq!(producer.activity(Instant::now()), None);
+		assert_eq!(library.bytes(), 0);
+	}
+
+	#[test]
+	fn stream_admission_keeps_visible_animations_and_bounds_the_pool() {
+		let ctx = egui::Context::default();
+		let mut library = MediaLibrary::default();
+		let mut held = Vec::new();
+		for id in 1..=3 {
+			held.push(streaming(
+				&mut library,
+				&ctx,
+				id,
+				Lane::Inline,
+				Lane::Inline.frame_bytes(),
+			));
+		}
+		let (declined, producer) = streaming(
+			&mut library,
+			&ctx,
+			4,
+			Lane::Inline,
+			Lane::Inline.frame_bytes(),
+		);
+		assert_eq!(producer.activity(Instant::now()), None);
+		assert!(
+			held.iter()
+				.all(|(_, producer)| producer.activity(Instant::now()).is_some())
+		);
+		assert!(library.bytes() <= INLINE_FRAME_BYTES + 8 * 8 * 4);
+		assert!(!library.playable(declined.source.as_str()));
+		let slot = library.slots.get_mut(&declined.source).unwrap();
+		slot.record(
+			Motion::Animated,
+			declined.size,
+			Attempt::Failed(Instant::now() - RETRY),
+		);
+		assert!(
+			library.playable(declined.source.as_str()),
+			"resource pressure must not permanently reject the GIF"
+		);
+
+		let mut library = MediaLibrary::default();
+		for id in 0..INLINE_ANIMATIONS {
+			streaming(&mut library, &ctx, id, Lane::Inline, 4096);
+		}
+		let (_, producer) = streaming(&mut library, &ctx, INLINE_ANIMATIONS, Lane::Inline, 4096);
+		assert_eq!(
+			producer.activity(Instant::now()),
+			None,
+			"clip count is bounded independently of bytes"
+		);
+	}
 
 	#[test]
 	fn pick_prefers_playable_webp_over_still_proxy() {
@@ -1188,7 +1488,9 @@ impl Avatars {
 			.iter()
 			.map(|held| {
 				let texture = match &held.pixels {
-					Pixels::Still(still) | Pixels::Playing { still, .. } => still,
+					Pixels::Still(still)
+					| Pixels::Playing { still, .. }
+					| Pixels::Streaming { still, .. } => still,
 				};
 				let [width, height] = texture.resolution();
 				[width as u32, height as u32]

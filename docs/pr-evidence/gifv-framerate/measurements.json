@@ -1,0 +1,61 @@
+{
+  "date": "2026-11-15",
+  "baseline_commit": "0260a26ce1a81ee0f5dd7860329a69d214758343",
+  "profile": "debug/test, debug information disabled, incremental disabled, existing optimized media dependencies",
+  "linked_gif": {
+    "url": "https://media1.tenor.com/m/rfhdy0TtiAoAAAAC/horse-derp.gif",
+    "encoded_bytes": 34766782,
+    "frames": 361,
+    "duration_seconds": 18.05,
+    "source_fps": 20,
+    "prior_native_measurements": "../gif-cadence/measurements.json"
+  },
+  "preferred_video": {
+    "url": "https://media.tenor.com/rfhdy0TtiAoAAAPo/horse-derp.mp4",
+    "encoded_bytes": 3284217,
+    "frames": 599,
+    "duration_seconds": 19.967,
+    "source_fps_rounded": 29.999,
+    "largest_timestamp_gap_ms": 33.3334,
+    "index_offset_bytes": 32
+  },
+  "full_source_decode": {
+    "samples_per_size": 1,
+    "inline": {
+      "first_frame_ms": 45.5865,
+      "full_decode_ms": 984.5323,
+      "reserved_bytes": 6026553,
+      "byte_limit": 41943040
+    },
+    "viewer": {
+      "first_frame_ms": 36.1632,
+      "full_decode_ms": 1808.1807,
+      "reserved_bytes": 11578617,
+      "byte_limit": 100663296
+    }
+  },
+  "native_presentation": {
+    "renderer": "WGPU",
+    "source": "preferred_video",
+    "warmup_seconds": 2,
+    "sample_seconds": 20.0010,
+    "presented_revisions": 600,
+    "skipped_revisions": 0,
+    "fps": 29.998,
+    "longest_gap_ms": 35.225,
+    "reserved_bytes": 6026553,
+    "crosses_loop_boundary": true
+  },
+  "native_repeat": {
+    "source": "preferred_video",
+    "warmup_seconds": 2,
+    "sample_seconds": 20.0006,
+    "presented_revisions": 600,
+    "skipped_revisions": 0,
+    "fps": 29.999,
+    "longest_gap_ms": 34.830,
+    "reserved_bytes": 6026553,
+    "crosses_loop_boundary": true
+  },
+  "limitations": "Local decode and native texture presentation are separate measurements. No live Discord/official-client comparison, network latency, GPU scanout, CPU utilization, whole-process RSS, release or package measurements."
+}

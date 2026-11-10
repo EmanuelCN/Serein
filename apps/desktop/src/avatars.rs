@@ -1,4 +1,6 @@
 //! Credential-free, viewport-driven static avatars. No tokens enter this worker.
+#[path = "avatars/streaming.rs"]
+pub(crate) mod streaming;
 use eframe::egui;
 use image::ImageEncoder;
 use model::Id;
@@ -76,6 +78,9 @@ fn lottie_key(key: &str) -> bool {
 	(key.starts_with("embed:sticker-") || key.starts_with("anim:sticker-")) && key.ends_with("-3")
 }
 fn media_encoded(rendition: &Rendition) -> usize {
+	if model::valid_tenor_gif_source(rendition.source.as_str()) {
+		return streaming::MAX_ENCODED;
+	}
 	let (width, height) = match rendition.size {
 		Size::Exact { width, height } => (width, height),
 		Size::Longest(edge) => (edge.get(), edge.get()),
@@ -344,6 +349,7 @@ pub struct AvatarResult {
 	pub key: String,
 	pub image: Option<egui::ColorImage>,
 	pub frames: ui::GifFrames,
+	pub stream: Option<ui::AnimationStream>,
 	pub error: Option<&'static str>,
 	pub stage: DecodeStage,
 	// Stays charged until the UI has consumed or discarded the complete result.
@@ -358,6 +364,10 @@ impl AvatarResult {
 			+ self.key.capacity()
 			+ self.image.as_ref().map_or(0, pixels)
 			+ self.frames.capacity() * size_of::<(Duration, Arc<egui::ColorImage>)>()
+			+ self
+				.stream
+				.as_ref()
+				.map_or(0, ui::AnimationStream::reserved_bytes)
 			+ self
 				.frames
 				.iter()
@@ -393,6 +403,7 @@ impl ResultSender {
 			// A future decoder change must not wait forever for an impossible reservation.
 			result.image = None;
 			result.frames = Vec::new();
+			result.stream = None;
 			result.error = Some("Decoded image exceeds the memory limit");
 		}
 		let bytes = result.bytes();
@@ -430,10 +441,13 @@ impl ResultSender {
 	}
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecodeStage {
 	Preview,
 	Settled,
+	Streaming,
+	SourceCached,
+	Retry,
 }
 
 pub struct AvatarWorker {
@@ -845,7 +859,8 @@ fn media_urls(rendition: &Rendition) -> Option<MediaUrls> {
 	let webp = path
 		.rsplit_once('.')
 		.is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("webp"));
-	let provider = (model::valid_gif_url(source) && path.ends_with(".gif"))
+	let provider = model::valid_tenor_gif_source(source)
+		|| (model::valid_gif_url(source) && path.ends_with(".gif"))
 		|| (model::valid_gif_preview(source)
 			&& (path.ends_with(".gif") || path.ends_with(".webp")));
 	let (primary, fallback) = match rendition.motion {
@@ -1294,6 +1309,8 @@ async fn run(
 						fetched: None,
 						image,
 						frames: Vec::new(),
+						streamed: false,
+						retry: false,
 						error: None,
 						until: Instant::now(),
 					};
@@ -1380,6 +1397,8 @@ async fn run(
 				fetched,
 				image,
 				frames,
+				streamed,
+				retry,
 				mut error,
 				until,
 			},
@@ -1406,8 +1425,9 @@ async fn run(
 			key,
 			image,
 			frames,
+			stream: None,
 			error,
-			stage: DecodeStage::Settled,
+			stage: if retry { DecodeStage::Retry } else if streamed { DecodeStage::SourceCached } else { DecodeStage::Settled },
 			_reservation: None,
 		}) => if !result { break },
 		}
@@ -1490,6 +1510,8 @@ struct Loaded {
 	fetched: Option<Vec<u8>>,
 	image: Option<egui::ColorImage>,
 	frames: ui::GifFrames,
+	streamed: bool,
+	retry: bool,
 	error: Option<&'static str>,
 	until: Instant,
 }
@@ -1520,6 +1542,13 @@ async fn load(job: Job) -> Loaded {
 		None => None,
 	};
 	let animated = budget.frames.is_some();
+	if animated
+		&& Rendition::parse(&key).is_some_and(|rendition| {
+			model::valid_tenor_gif_source(rendition.source.as_str())
+				|| ui::is_motion_video(rendition.source.as_str())
+		}) {
+		return load_stream(key, url, budget, cached, error, client, cooldown, early).await;
+	}
 	let mut until = cooldown;
 	let mut early = animated.then_some(early);
 	let mut stale = None;
@@ -1534,6 +1563,8 @@ async fn load(job: Job) -> Loaded {
 				fetched: None,
 				image,
 				frames,
+				streamed: false,
+				retry: false,
 				error,
 				until,
 			};
@@ -1565,6 +1596,8 @@ async fn load(job: Job) -> Loaded {
 		fetched,
 		image,
 		frames,
+		streamed: false,
+		retry: false,
 		error,
 		until,
 	}
@@ -1588,6 +1621,125 @@ async fn fetch(
 		encoded_limit(key)
 	};
 	download(client, &url, until, limit).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn load_stream(
+	key: String,
+	url: String,
+	budget: Budget,
+	cached: Option<Vec<u8>>,
+	error: Option<&'static str>,
+	client: Option<wreq::Client>,
+	mut until: Instant,
+	early: ResultSender,
+) -> Loaded {
+	let mut loaded = Loaded {
+		key,
+		fetched: None,
+		image: None,
+		frames: Vec::new(),
+		streamed: false,
+		retry: false,
+		error,
+		until,
+	};
+	let Some(frame_budget) = budget.frames else {
+		return loaded;
+	};
+	let Ok(permit) = streaming::SLOTS.clone().try_acquire_owned() else {
+		loaded.retry = true;
+		return loaded;
+	};
+	let (stream, producer) = ui::AnimationStream::channel(frame_budget.fit, frame_budget.bytes);
+	let format = if ui::is_motion_video(&url) {
+		streaming::Format::Video
+	} else {
+		streaming::Format::Gif
+	};
+	let input = streaming::Input::new(producer.clone(), frame_budget.bytes.min(budget.encoded));
+	let _download_guard = streaming::DownloadGuard(input.clone());
+	if let Some(bytes) = cached {
+		if !input.cached(bytes) {
+			return loaded;
+		}
+		let Ok(ready) = streaming::spawn(
+			input,
+			frame_budget,
+			producer,
+			permit,
+			early.wake.clone(),
+			format,
+		) else {
+			return loaded;
+		};
+		if let Ok(image) = ready.await {
+			loaded.streamed = early
+				.send(AvatarResult {
+					key: loaded.key.clone(),
+					image: Some(image),
+					frames: Vec::new(),
+					stream: Some(stream),
+					error,
+					stage: DecodeStage::Streaming,
+					_reservation: None,
+				})
+				.await;
+		}
+		return loaded;
+	}
+	let Some(client) = client else { return loaded };
+	let Ok(mut ready) = streaming::spawn(
+		input.clone(),
+		frame_budget,
+		producer,
+		permit,
+		early.wake.clone(),
+		format,
+	) else {
+		return loaded;
+	};
+	let mut downloading = Box::pin(download_into(
+		&client,
+		&url,
+		&mut until,
+		budget.encoded,
+		Some(&input),
+	));
+	let mut completed = None;
+	let image = tokio::select! {
+		image = &mut ready => image.ok(),
+		body = &mut downloading => {
+			input.finish(body.is_some());
+			completed = Some(body);
+			ready.await.ok()
+		},
+	};
+	if let Some(image) = image {
+		loaded.streamed = early
+			.send(AvatarResult {
+				key: loaded.key.clone(),
+				image: Some(image),
+				frames: Vec::new(),
+				stream: Some(stream),
+				error,
+				stage: DecodeStage::Streaming,
+				_reservation: None,
+			})
+			.await;
+		if loaded.streamed {
+			let body = match completed {
+				Some(body) => body,
+				None => downloading.as_mut().await,
+			};
+			input.finish(body.is_some());
+			loaded.fetched = body;
+		}
+	}
+	// The download borrows `until` until its future is dropped.
+	drop(downloading);
+	loaded.until = until;
+	loaded
 }
 
 /// Decode on a blocking thread so loads decode in parallel. Returns the stored bytes too:
@@ -1632,6 +1784,7 @@ async fn decode_blocking(
 					key: key.clone(),
 					image: Some(image.clone()),
 					frames: Vec::new(),
+					stream: None,
 					error: None,
 					stage: DecodeStage::Preview,
 					_reservation: None,
@@ -1802,13 +1955,26 @@ async fn download(
 	cooldown: &mut Instant,
 	limit: usize,
 ) -> Option<Vec<u8>> {
+	download_into(client, url, cooldown, limit, None).await
+}
+
+async fn download_into(
+	client: &wreq::Client,
+	url: &str,
+	cooldown: &mut Instant,
+	limit: usize,
+	input: Option<&streaming::Input>,
+) -> Option<Vec<u8>> {
 	if Instant::now() < *cooldown {
 		return None;
 	}
-	let response = client_core::fingerprint::discord_request(client.get(url), url)
-		.send()
-		.await
-		.ok()?;
+	let mut request = client_core::fingerprint::discord_request(client.get(url), url);
+	if input.is_some() && limit > MAX_ANIMATED_ENCODED {
+		// Original GIFs can be much larger than their MP4 renditions. First-frame delivery
+		// streams independently; give the bounded body time to finish on slower connections.
+		request = request.timeout(Duration::from_secs(60));
+	}
+	let response = request.send().await.ok()?;
 	if response.status() == wreq::StatusCode::TOO_MANY_REQUESTS {
 		let seconds = response
 			.headers()
@@ -1832,6 +1998,13 @@ async fn download(
 	}
 	let mut bytes =
 		Vec::with_capacity(response.content_length().unwrap_or(4096).min(limit as u64) as usize);
+	if let Some(input) = input
+		&& response
+			.content_length()
+			.is_some_and(|length| !input.reserve(length as usize))
+	{
+		return None;
+	}
 	let mut response_body = std::pin::pin!(response.bytes_stream());
 	while let Some(chunk) = futures_util::StreamExt::next(&mut response_body)
 		.await
@@ -1841,6 +2014,12 @@ async fn download(
 		if bytes.len().checked_add(chunk.len())? > limit {
 			return None;
 		}
+		if let Some(input) = input
+			&& !input.append(&chunk)
+		{
+			return None;
+		}
+		bytes.try_reserve_exact(chunk.len()).ok()?;
 		bytes.extend_from_slice(&chunk);
 	}
 	Some(bytes)
@@ -1939,7 +2118,7 @@ fn resize_to(image: image::RgbaImage, fit: u32) -> image::RgbaImage {
 fn first_video_frame(bytes: &[u8], fit: u32) -> Option<egui::ColorImage> {
 	let started = Instant::now();
 	let bytes: Arc<[u8]> = bytes.into();
-	let mut decoder = open_preview_decoder(bytes, started)?;
+	let mut decoder = open_preview_decoder(bytes, started, fit)?;
 	while started.elapsed() < Duration::from_secs(3) {
 		match decoder.poll_video() {
 			Ok(std::task::Poll::Pending) => {
@@ -1967,16 +2146,39 @@ fn first_video_frame(bytes: &[u8], fit: u32) -> Option<egui::ColorImage> {
 	None
 }
 
-fn open_preview_decoder(bytes: Arc<[u8]>, started: Instant) -> Option<platform::video::Decoder> {
+fn open_preview_decoder(
+	bytes: Arc<[u8]>,
+	started: Instant,
+	_fit: u32,
+) -> Option<platform::video::Decoder> {
 	let source = Box::new(Cursor::new(bytes));
-	#[cfg(target_os = "linux")]
-	let decoder = platform::video::Decoder::open_until(source, started + Duration::from_secs(3));
-	#[cfg(not(target_os = "linux"))]
-	let decoder = platform::video::Decoder::open(source);
-	decoder
-		.ok()
-		.filter(|_| started.elapsed() < Duration::from_secs(3))
+	open_preview_source(source, started, _fit)
 }
+
+fn open_preview_source(
+	source: Box<dyn platform::video::ReadSeek>,
+	started: Instant,
+	_fit: u32,
+) -> Option<platform::video::Decoder> {
+	open_preview_source_until(source, started + Duration::from_secs(3), _fit)
+}
+
+fn open_preview_source_until(
+	source: Box<dyn platform::video::ReadSeek>,
+	deadline: Instant,
+	_fit: u32,
+) -> Option<platform::video::Decoder> {
+	#[cfg(target_os = "linux")]
+	let decoder = platform::video::Decoder::open_until(source, deadline);
+	#[cfg(target_os = "windows")]
+	let decoder = platform::video::Decoder::open_preview(source, _fit);
+	#[cfg(target_os = "macos")]
+	let decoder = platform::video::Decoder::open(source);
+	decoder.ok().filter(|_| Instant::now() < deadline)
+}
+
+/// Source frames one clip may decode before it is treated as too long to play inline.
+const MAX_CLIP_FRAMES: usize = 3600;
 
 fn decode_motion_video(
 	bytes: &[u8],
@@ -1990,15 +2192,21 @@ fn decode_motion_video(
 	// One owned copy for the decoder's 'static stream, shared by every shrink pass.
 	let bytes: Arc<[u8]> = bytes.into();
 	'decode: loop {
-		let mut decoder = open_preview_decoder(bytes.clone(), started)?;
+		let mut decoder = open_preview_decoder(bytes.clone(), started, fit)?;
 		let duration = decoder.info().duration;
+		let mut first_pts = None;
 		let mut frames: Vec<(f64, Arc<egui::ColorImage>)> = Vec::new();
 		let mut total = 0usize;
 		let mut stride = 1usize;
 		let mut index = 0usize;
+		// Kept frames are spread evenly over the clip once the first one shows how many the
+		// budget holds; the others are skipped before any colour conversion or resizing, which
+		// cost far more than decoding them. Timing still comes from each kept frame's own pts.
+		let mut spacing: Option<(f64, f64)> = None;
 		loop {
-			// A partial clip would loop with a visible jump; the embed falls back to its GIF instead.
-			if index >= 600 || started.elapsed() > Duration::from_secs(3) {
+			// A partial clip would loop with a visible jump; the embed falls back to its still
+			// instead. Skipped frames only cost decoding, so long clips fit the deadline.
+			if index >= MAX_CLIP_FRAMES || started.elapsed() > Duration::from_secs(3) {
 				return None;
 			}
 			match decoder.poll_video() {
@@ -2010,15 +2218,24 @@ fn decode_motion_video(
 					pts,
 					picture,
 				}))) => {
+					// A movie's duration is a span, while decoded timestamps can start above zero
+					// (for example, H.264 composition offsets). Normalize before sampling: treating
+					// duration as an absolute end otherwise keeps an extra frame, compacts the loop
+					// unnecessarily and gives its tail the wrong duration.
+					let pts = pts - *first_pts.get_or_insert(pts);
+					let due = spacing.is_none_or(|(start, interval)| {
+						// A few milliseconds of slack keep the schedule even on jittery pts.
+						pts + 0.005 >= start + frames.len() as f64 * interval
+					});
+					if !due || !index.is_multiple_of(stride) {
+						index += 1;
+						continue;
+					}
 					// Clip frames are resized and cached once, so the CPU conversion stays.
 					let (width, height, rgba) = picture.to_rgba()?;
 					let pixels = (width as usize).checked_mul(height as usize)?;
 					if width == 0 || height == 0 || rgba.len() != pixels.checked_mul(4)? {
 						return None;
-					}
-					if !index.is_multiple_of(stride) {
-						index += 1;
-						continue;
 					}
 					let image = image::RgbaImage::from_raw(width, height, rgba)?;
 					let image = resize_to(image, fit);
@@ -2049,6 +2266,15 @@ fn decode_motion_video(
 					total += frame_bytes;
 					frames.push((pts, stored));
 					index += 1;
+					if spacing.is_none() && duration.is_finite() && duration > pts {
+						// The frames plus one playback texture fit the byte budget, as checked
+						// above, and the count stays within the frame bound.
+						let keep = budget
+							.count
+							.min((budget.bytes / frame_bytes.max(1)).saturating_sub(1))
+							.max(2);
+						spacing = Some((pts, (duration - pts) / keep as f64));
+					}
 				}
 				Ok(std::task::Poll::Ready(Some(_))) => {}
 				Ok(std::task::Poll::Ready(None)) => break,
@@ -2645,6 +2871,7 @@ mod tests {
 			key: "synthetic".into(),
 			image: Some(egui::ColorImage::filled([edge, edge], egui::Color32::RED)),
 			frames: Vec::new(),
+			stream: None,
 			error: None,
 			stage: DecodeStage::Settled,
 			_reservation: None,
@@ -2936,6 +3163,72 @@ mod tests {
 		assert!(super::render_lottie_animation(still.as_bytes()).is_none());
 		assert!(super::render_lottie(still.as_bytes()).is_some());
 	}
+	/// Regression: a long gifv clip (Tenor's are often 20 seconds) never finished decoding
+	/// inside its deadline, because every source frame was colour-converted and resized and
+	/// most were then discarded. Kept frames are now chosen before conversion and spread
+	/// evenly over the whole clip.
+	#[test]
+	fn long_clips_keep_evenly_spaced_frames_across_their_duration() {
+		// 72 frames over three seconds.
+		let bytes = include_bytes!("../tests/fixtures/video.mov");
+		let budget = FrameBudget {
+			fit: 160,
+			bytes: 64 * 1024 * 1024,
+			count: 8,
+			shrinks: 0,
+		};
+		// Windows ships the H.264 decoder. A failed decode there is a regression, not an
+		// unavailable optional codec; do not silently turn the failure into a passing test.
+		#[cfg(not(target_os = "windows"))]
+		if super::open_preview_decoder(Arc::from(bytes.as_slice()), Instant::now(), budget.fit)
+			.is_none()
+		{
+			return;
+		}
+		let frames = super::decode_motion_video(bytes, &budget, |_| {}).expect("H.264 preview");
+		assert!((7..=8).contains(&frames.len()), "{}", frames.len());
+		let played: std::time::Duration = frames.iter().map(|(delay, _)| *delay).sum();
+		assert!((2_900..=3_100).contains(&played.as_millis()), "{played:?}");
+		for (delay, _) in &frames[..frames.len() - 1] {
+			assert!((330..=420).contains(&delay.as_millis()), "{delay:?}");
+		}
+	}
+
+	/// Local, credential-free profiling of a supplied clip; never downloads service media.
+	#[test]
+	#[ignore = "set SEREIN_MEDIA_CLIP to a local MP4 to measure native preview decoding"]
+	fn local_clip_decode_workload() {
+		let path = std::env::var_os("SEREIN_MEDIA_CLIP").expect("local clip path");
+		let bytes = std::fs::read(path).unwrap();
+		for (name, fit, bytes_limit) in [("inline", 368, 40), ("viewer", 720, 96)] {
+			let budget = FrameBudget {
+				fit,
+				bytes: bytes_limit * 1024 * 1024,
+				count: ui::MAX_FRAMES,
+				shrinks: 0,
+			};
+			let started = Instant::now();
+			let frames = super::decode_animation(&bytes, &budget, |_| {
+				eprintln!("{name}: first frame {:?}", started.elapsed());
+			});
+			eprintln!(
+				"{name}: settled {:?}, frames {:?}",
+				started.elapsed(),
+				frames.as_ref().map(Vec::len)
+			);
+			assert!(
+				frames.as_ref().is_some_and(|frames| frames.len() >= 2),
+				"{name} must animate"
+			);
+			let frames = frames.unwrap();
+			let retained = frames.iter().map(|(_, image)| image.pixels().len() * 4);
+			let retained = retained.clone().sum::<usize>() + retained.max().unwrap_or(0);
+			let duration: Duration = frames.iter().map(|(delay, _)| *delay).sum();
+			eprintln!("{name}: {duration:?} playback, {retained} reserved bytes");
+			assert!(frames.len() <= budget.count && retained <= budget.bytes);
+		}
+	}
+
 	#[test]
 	fn role_icon_urls_are_confined_to_the_role_cdn_path() {
 		assert_eq!(

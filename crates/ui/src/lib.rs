@@ -139,6 +139,7 @@ mod user_direct;
 mod user_menu;
 mod verification;
 mod voice;
+pub use avatars::stream::{AnimationProducer, AnimationStream, StreamActivity};
 use client_core::{Command, MAX_DRAFT_BYTES, NavStep, State};
 use egui::{RichText, TextEdit};
 use model::{Freshness, Id};
@@ -1240,6 +1241,12 @@ impl MessagingUi {
 	}
 	pub fn accept_gif_animation(&mut self, key: String, frames: GifFrames) {
 		self.avatars.accept_animation(key, frames);
+	}
+	pub fn accept_gif_stream(&mut self, key: &str, stream: AnimationStream) {
+		self.avatars.accept_stream(key, stream);
+	}
+	pub fn defer_avatar(&mut self, ctx: &egui::Context, key: &str) {
+		self.avatars.defer(ctx, key);
 	}
 	pub fn accept_avatar(
 		&mut self,
