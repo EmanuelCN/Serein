@@ -72,10 +72,11 @@ pub enum KeybindAction {
 	ToggleMute,
 	ToggleDeafen,
 	CopyIssueDiagnostics,
+	RestartApp,
 }
 
 impl KeybindAction {
-	pub const ALL: [Self; 20] = [
+	pub const ALL: [Self; 21] = [
 		Self::ShowShortcuts,
 		Self::SwitchConversation,
 		Self::SearchConversation,
@@ -96,6 +97,7 @@ impl KeybindAction {
 		Self::ToggleMute,
 		Self::ToggleDeafen,
 		Self::CopyIssueDiagnostics,
+		Self::RestartApp,
 	];
 
 	pub const fn label(self) -> &'static str {
@@ -120,6 +122,7 @@ impl KeybindAction {
 			Self::ToggleMute => "Toggle Mute",
 			Self::ToggleDeafen => "Toggle Deafen",
 			Self::CopyIssueDiagnostics => "Copy Issue Diagnostics",
+			Self::RestartApp => "Restart Serein",
 		}
 	}
 
@@ -163,6 +166,8 @@ pub struct Keybinds {
 	pub toggle_deafen: KeyChord,
 	/// Unassigned by default; the empty key is valid only for optional actions.
 	pub copy_issue_diagnostics: KeyChord,
+	/// Restarts the application through its normal close path; Ctrl+R as in Discord.
+	pub restart_app: KeyChord,
 	/// Extra user-defined bindings for any action; unassigned rows are not saved.
 	#[serde(
 		default,
@@ -237,6 +242,7 @@ impl Default for Keybinds {
 			toggle_mute: KeyChord::new("M", PRIMARY | SHIFT),
 			toggle_deafen: KeyChord::new("D", PRIMARY | SHIFT),
 			copy_issue_diagnostics: KeyChord::new("", 0),
+			restart_app: KeyChord::new("R", PRIMARY),
 			custom: Vec::new(),
 		}
 	}
@@ -276,6 +282,7 @@ impl Keybinds {
 			KeybindAction::ToggleMute => &self.toggle_mute,
 			KeybindAction::ToggleDeafen => &self.toggle_deafen,
 			KeybindAction::CopyIssueDiagnostics => &self.copy_issue_diagnostics,
+			KeybindAction::RestartApp => &self.restart_app,
 		}
 	}
 
@@ -301,6 +308,7 @@ impl Keybinds {
 			KeybindAction::ToggleMute => &mut self.toggle_mute,
 			KeybindAction::ToggleDeafen => &mut self.toggle_deafen,
 			KeybindAction::CopyIssueDiagnostics => &mut self.copy_issue_diagnostics,
+			KeybindAction::RestartApp => &mut self.restart_app,
 		}
 	}
 
@@ -385,6 +393,13 @@ mod tests {
 				Some(KeybindAction::EmojiPicker),
 				None
 			),
+			None
+		);
+		// Restart has Ctrl+R to itself and is enabled out of the box.
+		assert_eq!(defaults.restart_app, KeyChord::new("R", PRIMARY));
+		assert!(!KeybindAction::RestartApp.is_optional());
+		assert_eq!(
+			defaults.conflict(&defaults.restart_app, Some(KeybindAction::RestartApp), None),
 			None
 		);
 		// Preferences saved before this action existed load inline code on Ctrl+E and the
