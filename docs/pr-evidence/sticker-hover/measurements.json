@@ -1,0 +1,96 @@
+{
+  "baseline_commit": "0ec7a773",
+  "working_tree_base": "6cab6b0a",
+  "toolchain": "1.99.1",
+  "os": "Windows 10 IoT Enterprise LTSC 19044",
+  "cpu": "AMD Ryzen 5 4600H, 12 logical processors",
+  "physical_ram_kib": 16119108,
+  "gpu": "NVIDIA GeForce RTX 2060",
+  "profile": "debug/test, debug information disabled; existing media package optimization retained",
+  "measured_on": "2026-11-12",
+  "sticker_cpu_preparation": {
+    "animations": 30,
+    "source_pixels": [
+      160,
+      120
+    ],
+    "frames_per_animation": 16,
+    "grid_points": 96,
+    "footer_points": 32,
+    "ticks_per_sample": 160,
+    "warmup_samples": 1,
+    "measured_samples": 5,
+    "before_ms_per_tick": [
+      1.094,
+      0.766,
+      0.912,
+      1.038,
+      0.692
+    ],
+    "after_ms_per_tick": [
+      0.28,
+      0.273,
+      0.282,
+      0.282,
+      0.273
+    ],
+    "before_median_ms": 0.912,
+    "after_median_ms": 0.28,
+    "before_uploads_per_sample": 1726,
+    "after_uploads_per_sample": 1674,
+    "before_reserved_mib": 49.64,
+    "after_reserved_mib": 50.85,
+    "retained_animations_before_and_after": 30,
+    "gpu_rendering_measured": false
+  },
+  "screenshots": {
+    "before": "before.png",
+    "after": "after.png",
+    "logical_and_physical_size": [
+      1120,
+      760
+    ],
+    "scale": 1,
+    "appearance": "dark",
+    "pointer_points": [
+      540,
+      425
+    ],
+    "renderer": "WGPU; native backend not recorded",
+    "synthetic": true
+  },
+  "unmeasured": [
+    "release/package sizes",
+    "network and live Discord latency",
+    "GPU frame latency",
+    "native idle CPU",
+    "process RSS"
+  ],
+  "validation": {
+    "format": "passed",
+    "workspace_clippy_warnings_denied": "passed",
+    "no_default_features_check": "passed",
+    "policy": "passed",
+    "workspace_check": "not green: two unchanged failures reproduced on baseline",
+    "known_failures": [
+      {
+        "test": "typing::tests::bounded_flood_refresh_and_out_of_order_signals_have_fixed_storage",
+        "failure": "Expected 8 entries, received 16",
+        "reproduced_on_baseline": "0ec7a773"
+      },
+      {
+        "test": "transport::test_stream::established_streams_bound_missing_rekey_execution_and_welcome",
+        "failure": "45-second test timeout",
+        "reproduced_on_baseline": "0ec7a773"
+      }
+    ],
+    "release_build": "not run, per owner instruction",
+    "push": "not performed",
+    "ui_unit_tests": {
+      "passed": 508,
+      "ignored": 5
+    },
+    "independent_texture_regression": "fails on baseline, passes with fix",
+    "native_synthetic_captures": "visually verified"
+  }
+}

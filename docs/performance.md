@@ -1946,3 +1946,40 @@ The build times are single samples and other work ran on the machine during the 
 so they show only that the BoringSSL build does not lengthen a clean macOS package build
 noticeably. Linux, Windows and Windows ARM64 (BoringSSL without assembly) sizes were not
 measured. Connection setup time, TLS throughput and memory were not measured.
+
+## Sticker hover playback - November 12, 2026
+
+Baseline `0ec7a773` includes the reported gifv and sticker-picker commits. The owner's next commit,
+`6cab6b0a`, changes release LTO only. These measurements use pinned Rust 1.99.1, locked dependencies,
+debug/test profiles and the existing optimized media dependencies on Windows 10 IoT Enterprise LTSC
+19044, Ryzen 5 4600H (12 logical processors), approximately 15.4 GiB RAM and an RTX 2060.
+Debug information was disabled and build concurrency limited after the initial build exhausted
+the host's paging-file allowance. No release build or package was produced, at the owner's request.
+
+The identical `sticker_hover_workload` was run before and after: thirty 160×120, sixteen-frame
+animations, a 96-point grid and a 32-point hovered footer. Each sample prepares 160 UI ticks;
+sample 0 warms the caches and samples 1–5 are measured. The workload explicitly advances playback
+and upload deadlines without sleeps. It measures CPU preparation/texture deltas without a window
+or GPU, not native rendered frame latency. Nothing else was building during these two workloads.
+
+| Metric | Baseline | After | Delta |
+| --- | ---: | ---: | ---: |
+| Median CPU preparation per tick | 0.912 ms | 0.280 ms | −0.632 ms (−69.3%) |
+| Texture uploads per 160-tick measured sample | 1,726 | 1,674 | −52 (−3.0%) |
+| Reserved animation bytes, rounded | 49.64 MiB | 50.85 MiB | +1.21 MiB (+2.4%) |
+| Animations retained | 30 | 30 | No evictions/reloads |
+
+The additional reservation covers independent fitted textures and retained grid/footer frame caches,
+within the existing 128 MiB animation pool. The original shared texture also repeatedly invalidated fitted
+frames; the new per-size caches retain them. The simultaneous-size regression test fails on the
+baseline's shared texture ID and passes with independent textures, including advancing frames.
+
+The [capture/reproduction guide](pr-evidence/sticker-hover/README.md) describes the
+same native offline picker fixture used for [before](pr-evidence/sticker-hover/before.png)
+and [after](pr-evidence/sticker-hover/after.png) captures. The checkerboard animation
+is generated artwork injected after decoding, not a service sticker or a Lottie rasterization test.
+Raw samples and measurement boundaries are in
+[measurements.json](pr-evidence/sticker-hover/measurements.json).
+Release/package size, live Discord/network latency, GPU frame latency, native idle CPU and process
+RSS were not measured. No account, calls, microphone, network service adapter or telemetry was used
+by the synthetic workloads/captures.

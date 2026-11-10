@@ -722,13 +722,12 @@ impl MediaLibrary {
 			still,
 			animation: Animation {
 				frames,
-				texture: None,
+				playback: super::Playback::default(),
 				total,
 				started,
 				played: now,
-				next_upload: now,
-				frame: usize::MAX,
 				bytes,
+				fitted: Vec::new(),
 			},
 		};
 		held.arrived = now;
