@@ -3202,9 +3202,9 @@ impl MessagingUi {
 		};
 		let bar = ui.max_rect();
 		// A narrow stage sheds secondary controls (view toggles, device chevrons, then
-		// share/more) before anything overlaps; mute, camera and hang-up always stay.
+		// share/more) before anything overlaps; mute, deafen, camera and hang-up always stay.
 		let actions = 2.0 * 48.0;
-		let essential = 2.0 * 48.0 + BAR_GAP + HANG_UP;
+		let essential = 3.0 * 48.0 + BAR_GAP + HANG_UP;
 		let side = [watched.is_some(), focused, screen_focused]
 			.iter()
 			.filter(|shown| **shown)
@@ -3215,9 +3215,9 @@ impl MessagingUi {
 		let room = bar.width() - 2.0 * STAGE_MARGIN - if side > 0.0 { side + BAR_GAP } else { 0.0 };
 		let chevrons = room >= 2.0 * 28.0 + actions + BAR_GAP + essential;
 		let media = if chevrons {
-			2.0 * (48.0 + 28.0)
+			3.0 * 48.0 + 2.0 * 28.0
 		} else {
-			2.0 * 48.0
+			3.0 * 48.0
 		};
 		let actions_shown = room >= media + BAR_GAP + actions + BAR_GAP + HANG_UP;
 		let width = media
@@ -3276,6 +3276,26 @@ impl MessagingUi {
 				);
 				self.voice_settings_popup(&settings, state.demo, true, true);
 			}
+			// Deafen sits beside mute, as in Discord, instead of only in the More menu. Both
+			// drive the same local choice, so either one updates the other.
+			deafen_clicked = control(
+				ui,
+				if deafened {
+					crate::icons::Icon::HeadphonesSlash
+				} else {
+					crate::icons::Icon::Headphones
+				},
+				48.0,
+				voice_toggles,
+				if deafened { colors.danger } else { STAGE_TEXT },
+				if deafened { "Undeafen" } else { "Deafen" },
+				if deafened {
+					"Turn sound back on"
+				} else {
+					"Turn off sound and your microphone"
+				},
+			)
+			.clicked();
 			camera_clicked = control(
 				ui,
 				if camera {
