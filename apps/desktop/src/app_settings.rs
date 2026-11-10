@@ -55,6 +55,7 @@ impl Settings {
 			hide_nitro_emojis: ui.hide_nitro_emojis,
 			convert_emoticons: ui.convert_emoticons,
 			preload_on_hover: ui.preload_on_hover,
+			click_to_join_voice: ui.click_to_join_voice,
 			auto_idle: ui.auto_idle,
 			hide_title_bar: ui.hide_title_bar,
 			message_requests_collapsed: ui.message_requests_collapsed,
@@ -111,6 +112,7 @@ impl Settings {
 		ui.hide_nitro_emojis = value.hide_nitro_emojis;
 		ui.convert_emoticons = value.convert_emoticons;
 		ui.preload_on_hover = value.preload_on_hover;
+		ui.click_to_join_voice = value.click_to_join_voice;
 		ui.auto_idle = value.auto_idle;
 		ui.hide_title_bar = value.hide_title_bar;
 		ui.message_requests_collapsed = value.message_requests_collapsed;
