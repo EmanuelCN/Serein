@@ -4168,6 +4168,10 @@ video-show-player-unmute = Unmute
 ## crates/ui/src/voice.rs
 # Context: call_bar
 voice-call-bar-call-in-progress = Call in progress
+voice-call-bar-connected-count = { $count ->
+    [one] { $count } person in the call
+   *[other] { $count } people in the call
+    }
 # Context: call_bar
 voice-call-bar-incoming-call = Incoming call…
 # Context: call_bar
