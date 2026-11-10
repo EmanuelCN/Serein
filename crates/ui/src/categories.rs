@@ -926,7 +926,12 @@ impl MessagingUi {
 								if response.clicked() {
 									selected = Some(channel.id);
 								}
-								if response.double_clicked() {
+								// Double-click always joins; with the opt-in setting, one primary
+								// click does too. Drags, context menus and keyboard focus never do.
+								if response.double_clicked()
+									|| (self.click_to_join_voice
+										&& response.clicked_by(egui::PointerButton::Primary))
+								{
 									self.voice_join = Some(channel.id);
 								}
 								paint_shelf_rule(
@@ -2890,5 +2895,24 @@ mod tests {
 				}
 			)]
 		));
+
+		// Opt-in click-to-join: one click opens and joins; off by default, as above.
+		assert!(!MessagingUi::default().click_to_join_voice);
+		state.voice.active = None;
+		view.click_to_join_voice = true;
+		let (picked, commands) = click(&mut view, &mut state, "Quiet room", 1);
+		assert_eq!(picked, Some(Id(26)));
+		assert!(matches!(
+			commands.as_slice(),
+			[client_core::Command::Voice(
+				client_core::voice::Command::Join {
+					channel: Id(26),
+					..
+				}
+			)]
+		));
+		// A click on the call's own channel never joins again.
+		let (_, commands) = click(&mut view, &mut state, "Quiet room", 1);
+		assert!(commands.is_empty());
 	}
 }

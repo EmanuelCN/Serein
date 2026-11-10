@@ -1208,6 +1208,12 @@ impl MessagingUi {
 					Some("settings-preload-on-hover-description"),
 					&mut self.preload_on_hover,
 				);
+				design::switch(
+					ui,
+					"settings-click-to-join-voice",
+					Some("settings-click-to-join-voice-description"),
+					&mut self.click_to_join_voice,
+				);
 			},
 		);
 		design::group(

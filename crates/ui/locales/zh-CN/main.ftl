@@ -4703,6 +4703,8 @@ settings-convert-emoticons = 自动把消息中的颜文字转成表情符号
 settings-convert-emoticons-description = 发送或编辑消息时，把 :) 这类独立颜文字转成 🙂。代码和链接不变。
 settings-preload-on-hover = 悬停时预加载
 settings-preload-on-hover-description = 指针停留在对话、个人资料或 GIF 选择器上时预先加载，打开时即刻显示。使用与打开相同的请求，每类每分钟最多 12 次。
+settings-click-to-join-voice = 单击加入语音频道
+settings-click-to-join-voice-description = 在频道列表中单击语音频道会立即加入，而不只是打开它。双击始终会加入。
 
 profiles-board = 看板
 profiles-board-unavailable = 这个个人资料的看板无法使用。
