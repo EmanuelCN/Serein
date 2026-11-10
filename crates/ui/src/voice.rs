@@ -4873,7 +4873,9 @@ fn gain_controls(ui: &mut egui::Ui, gain: &mut crate::VoiceGain) -> [egui::Respo
 	}
 }
 
-fn elapsed_label(call: &client_core::voice::Call) -> Option<String> {
+/// How long `call` has run, from its channel start time or this device's connection, while
+/// connected; shared by the voice channel row and the conversation list.
+pub(crate) fn elapsed_label(call: &client_core::voice::Call) -> Option<String> {
 	if !matches!(call.phase, Phase::Waiting | Phase::Connected) {
 		return None;
 	}
