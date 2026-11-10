@@ -642,7 +642,11 @@ pub fn show(
 						.on_hover_text(crate::i18n::translate("embeds-show-open-image-2"))
 						.clicked()
 				{
-					download.view_embed(message.id, image);
+					// A gifv opens on the clip it plays inline, not on its still poster.
+					match images.gif_embed_clip(embed) {
+						Some(clip) => download.view_embed(message.id, &clip),
+						None => download.view_embed(message.id, image),
+					}
 				}
 				if let Some(url) = &source_url {
 					link(

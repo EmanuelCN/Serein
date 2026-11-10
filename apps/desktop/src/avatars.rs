@@ -1978,6 +1978,9 @@ fn open_preview_decoder(bytes: Arc<[u8]>, started: Instant) -> Option<platform::
 		.filter(|_| started.elapsed() < Duration::from_secs(3))
 }
 
+/// Source frames one clip may decode before it is treated as too long to play inline.
+const MAX_CLIP_FRAMES: usize = 3600;
+
 fn decode_motion_video(
 	bytes: &[u8],
 	budget: &FrameBudget,
@@ -1996,9 +1999,14 @@ fn decode_motion_video(
 		let mut total = 0usize;
 		let mut stride = 1usize;
 		let mut index = 0usize;
+		// Kept frames are spread evenly over the clip once the first one shows how many the
+		// budget holds; the others are skipped before any colour conversion or resizing, which
+		// cost far more than decoding them. Timing still comes from each kept frame's own pts.
+		let mut spacing: Option<(f64, f64)> = None;
 		loop {
-			// A partial clip would loop with a visible jump; the embed falls back to its GIF instead.
-			if index >= 600 || started.elapsed() > Duration::from_secs(3) {
+			// A partial clip would loop with a visible jump; the embed falls back to its still
+			// instead. Skipped frames only cost decoding, so long clips fit the deadline.
+			if index >= MAX_CLIP_FRAMES || started.elapsed() > Duration::from_secs(3) {
 				return None;
 			}
 			match decoder.poll_video() {
@@ -2010,15 +2018,19 @@ fn decode_motion_video(
 					pts,
 					picture,
 				}))) => {
+					let due = spacing.is_none_or(|(start, interval)| {
+						// A few milliseconds of slack keep the schedule even on jittery pts.
+						pts + 0.005 >= start + frames.len() as f64 * interval
+					});
+					if !due || !index.is_multiple_of(stride) {
+						index += 1;
+						continue;
+					}
 					// Clip frames are resized and cached once, so the CPU conversion stays.
 					let (width, height, rgba) = picture.to_rgba()?;
 					let pixels = (width as usize).checked_mul(height as usize)?;
 					if width == 0 || height == 0 || rgba.len() != pixels.checked_mul(4)? {
 						return None;
-					}
-					if !index.is_multiple_of(stride) {
-						index += 1;
-						continue;
 					}
 					let image = image::RgbaImage::from_raw(width, height, rgba)?;
 					let image = resize_to(image, fit);
@@ -2049,6 +2061,15 @@ fn decode_motion_video(
 					total += frame_bytes;
 					frames.push((pts, stored));
 					index += 1;
+					if spacing.is_none() && duration.is_finite() && duration > pts {
+						// The frames plus one playback texture fit the byte budget, as checked
+						// above, and the count stays within the frame bound.
+						let keep = budget
+							.count
+							.min((budget.bytes / frame_bytes.max(1)).saturating_sub(1))
+							.max(2);
+						spacing = Some((pts, (duration - pts) / keep as f64));
+					}
 				}
 				Ok(std::task::Poll::Ready(Some(_))) => {}
 				Ok(std::task::Poll::Ready(None)) => break,
@@ -2936,6 +2957,32 @@ mod tests {
 		assert!(super::render_lottie_animation(still.as_bytes()).is_none());
 		assert!(super::render_lottie(still.as_bytes()).is_some());
 	}
+	/// Regression: a long gifv clip (Tenor's are often 20 seconds) never finished decoding
+	/// inside its deadline, because every source frame was colour-converted and resized and
+	/// most were then discarded. Kept frames are now chosen before conversion and spread
+	/// evenly over the whole clip.
+	#[test]
+	fn long_clips_keep_evenly_spaced_frames_across_their_duration() {
+		// 72 frames over three seconds.
+		let bytes = include_bytes!("../tests/fixtures/video.mov");
+		let budget = FrameBudget {
+			fit: 160,
+			bytes: 64 * 1024 * 1024,
+			count: 8,
+			shrinks: 0,
+		};
+		let Some(frames) = super::decode_motion_video(bytes, &budget, |_| {}) else {
+			// No platform decoder for H.264 in this environment.
+			return;
+		};
+		assert!((7..=8).contains(&frames.len()), "{}", frames.len());
+		let played: std::time::Duration = frames.iter().map(|(delay, _)| *delay).sum();
+		assert!((2_900..=3_100).contains(&played.as_millis()), "{played:?}");
+		for (delay, _) in &frames[..frames.len() - 1] {
+			assert!((330..=420).contains(&delay.as_millis()), "{delay:?}");
+		}
+	}
+
 	#[test]
 	fn role_icon_urls_are_confined_to_the_role_cdn_path() {
 		assert_eq!(

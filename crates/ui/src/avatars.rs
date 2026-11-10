@@ -1668,6 +1668,46 @@ impl Avatars {
 			);
 		}
 	}
+	/// The clip a gifv embed plays, inline and in the viewer: Discord's looping video for it,
+	/// while this device can decode it. `None` for other embeds, when animation is off, or
+	/// once the clip failed, so callers fall back to the GIF or poster.
+	pub(crate) fn gif_embed_clip(&mut self, embed: &model::Embed) -> Option<model::EmbedMedia> {
+		let poster = embed.image.as_ref().or(embed.thumbnail.as_ref());
+		let video = embed.video.as_ref().filter(|_| self.animate_gifs)?;
+		let url = video
+			.url
+			.as_deref()
+			.filter(|url| media::is_motion_video(url))
+			.or(video
+				.proxy_url
+				.as_deref()
+				.filter(|url| media::is_motion_video(url)))
+			.filter(|url| self.media.playable(url))?;
+		Some(model::EmbedMedia {
+			url: Some(url.to_owned()),
+			proxy_url: video
+				.proxy_url
+				.clone()
+				.filter(|proxy| media::is_motion_video(proxy)),
+			width: if video.width > 0 {
+				video.width
+			} else {
+				poster.map(|poster| poster.width).unwrap_or(0)
+			},
+			height: if video.height > 0 {
+				video.height
+			} else {
+				poster.map(|poster| poster.height).unwrap_or(0)
+			},
+			placeholder: if video.placeholder.is_empty() {
+				poster
+					.map(|poster| poster.placeholder.clone())
+					.unwrap_or_default()
+			} else {
+				video.placeholder.clone()
+			},
+		})
+	}
 	pub fn show_gif_embed(
 		&mut self,
 		ui: &mut egui::Ui,
@@ -1677,45 +1717,7 @@ impl Avatars {
 		demo: bool,
 	) -> egui::Response {
 		let poster = embed.image.as_ref().or(embed.thumbnail.as_ref());
-		let video = self
-			.animate_gifs
-			.then_some(embed.video.as_ref())
-			.flatten()
-			.and_then(|video| {
-				let url = video
-					.url
-					.as_deref()
-					.filter(|url| media::is_motion_video(url))
-					.or(video
-						.proxy_url
-						.as_deref()
-						.filter(|url| media::is_motion_video(url)))
-					.filter(|url| self.media.playable(url))?;
-				Some(model::EmbedMedia {
-					url: Some(url.to_owned()),
-					proxy_url: video
-						.proxy_url
-						.clone()
-						.filter(|proxy| media::is_motion_video(proxy)),
-					width: if video.width > 0 {
-						video.width
-					} else {
-						poster.map(|poster| poster.width).unwrap_or(0)
-					},
-					height: if video.height > 0 {
-						video.height
-					} else {
-						poster.map(|poster| poster.height).unwrap_or(0)
-					},
-					placeholder: if video.placeholder.is_empty() {
-						poster
-							.map(|poster| poster.placeholder.clone())
-							.unwrap_or_default()
-					} else {
-						video.placeholder.clone()
-					},
-				})
-			});
+		let video = self.gif_embed_clip(embed);
 		// A favorite's saved Discord attachment link lacks the expiring signature and is
 		// refused; the embed's own media is the same GIF, freshly signed, and plays as is.
 		let original = gif
@@ -3082,6 +3084,55 @@ mod tests {
 		assert_eq!(fallback, [format!("media:is:64x32:{poster}")]);
 		// The rejected clip is never requested again.
 		assert!(!frame(&mut images).iter().any(|key| key.ends_with(".mp4")));
+	}
+
+	/// A link straight to a Tenor GIF is embedded as a gifv. Its looping clip plays inline and
+	/// is what the viewer opens; the linked original (often tens of megabytes) is never
+	/// fetched, and a clip that cannot play leaves the still poster rather than nothing.
+	#[test]
+	fn gif_links_play_and_open_their_clip_never_the_oversized_original() {
+		let ctx = egui::Context::default();
+		let mut images = Avatars::default();
+		images.set_animation(true);
+		let clip_url = "https://media.tenor.com/rfhdy0TtiAoAAAPo/horse-derp.mp4";
+		let embed = model::Embed {
+			kind: "gifv".into(),
+			url: Some("https://media1.tenor.com/m/rfhdy0TtiAoAAAAC/horse-derp.gif".into()),
+			thumbnail: Some(model::EmbedMedia {
+				url: Some("https://media.tenor.com/rfhdy0TtiAoAAAAe/horse-derp.png".into()),
+				width: 360,
+				height: 640,
+				..Default::default()
+			}),
+			video: Some(model::EmbedMedia {
+				url: Some(clip_url.into()),
+				width: 360,
+				height: 640,
+				..Default::default()
+			}),
+			..Default::default()
+		};
+		let frame = |images: &mut Avatars| {
+			ctx.run_ui(Default::default(), |ui| {
+				images.show_gif_embed(ui, &embed, None, egui::vec2(320.0, 320.0), false);
+			})
+			.drop_without_applying_deltas();
+			images.take_requests()
+		};
+		let clip = frame(&mut images);
+		assert_eq!(clip.len(), 1);
+		assert!(clip[0].starts_with("media:ia:") && clip[0].ends_with(clip_url));
+		// The viewer opens the same clip.
+		let viewed = images.gif_embed_clip(&embed).unwrap();
+		assert_eq!(viewed.url.as_deref(), Some(clip_url));
+		// A clip this device cannot decode falls back to the poster, never the linked GIF.
+		images.accept(&ctx, clip[0].clone(), None);
+		assert!(images.gif_embed_clip(&embed).is_none());
+		let fallback = frame(&mut images);
+		assert!(
+			fallback.iter().all(|key| key.ends_with("horse-derp.png")),
+			"{fallback:?}"
+		);
 	}
 
 	#[test]
