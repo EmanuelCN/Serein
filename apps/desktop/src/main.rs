@@ -6098,6 +6098,23 @@ impl eframe::App for Desktop {
 					),
 					Err(error) => self.messaging.toasts.push(ui::design::Level::Error, error),
 				}
+			} else if paste.generation == self.state.generation
+				&& self.state.user.is_some()
+				&& upload_allowed
+				&& let Ok(clipboard::Content::File(source)) = result
+				&& (self.state.can_attach(paste.channel)
+					|| self.state.can_attach_post(paste.channel))
+			{
+				// Read after the user left: the files join the draft they were pasted into.
+				if let Err(error) = self.uploads.select_pasted(
+					paste.generation,
+					paste.channel,
+					source,
+					self.runtime.handle(),
+					&ctx,
+				) {
+					self.messaging.toasts.push(ui::design::Level::Error, error);
+				}
 			}
 			self.clipboard = None;
 		}
@@ -6111,10 +6128,11 @@ impl eframe::App for Desktop {
 			state.user.is_some() && state.gateway_connected,
 			|channel| state.can_view(channel),
 		);
+		// Staged files are a draft: a reconnect keeps them, like the conversation's text.
 		self.uploads.poll(
 			self.state.generation,
 			self.state.selected,
-			self.state.user.is_some() && self.state.gateway_connected,
+			self.state.user.is_some(),
 			&ctx,
 		);
 		if let Some(command) = self.uploads.image_send(&mut self.state, can_attach)

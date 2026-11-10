@@ -620,8 +620,14 @@ impl Uploads {
 		if self.selected.len() + self.loading() + source.len() > discord_api::upload::MAX_FILES {
 			return Err("Attach up to 10 files per message");
 		}
+		// A paste that finished after the user left its conversation joins that conversation's
+		// draft, not the one now open.
+		let target = (generation, channel);
+		if let Some(current) = self.scope.filter(|scope| *scope != target) {
+			return self.select_pasted_elsewhere(current, target, source, runtime, context);
+		}
 		self.admit(&source)?;
-		self.scope = Some((generation, channel));
+		self.scope = Some(target);
 		self.clear_finished_progress();
 		for source in source {
 			let key = self.push(source, None);
@@ -641,6 +647,34 @@ impl Uploads {
 			}
 		}
 		Ok(())
+	}
+	/// Stage pasted files in the parked draft of `target` while `current` stays open: swap the
+	/// target's draft in, stage normally, then park it again.
+	fn select_pasted_elsewhere(
+		&mut self,
+		current: (u64, Id),
+		target: (u64, Id),
+		source: Vec<Source>,
+		runtime: &tokio::runtime::Handle,
+		context: &egui::Context,
+	) -> Result<(), &'static str> {
+		let open = (
+			std::mem::take(&mut self.selected),
+			std::mem::take(&mut self.previewing),
+		);
+		if let Some(index) = self.parked.iter().position(|parked| parked.scope == target) {
+			let parked = self.parked.remove(index);
+			self.selected = parked.selected;
+			self.previewing = parked.previewing;
+		}
+		self.scope = Some(target);
+		let result = self.select_pasted(target.0, target.1, source, runtime, context);
+		if !self.selected.is_empty() {
+			self.park(target);
+		}
+		self.scope = Some(current);
+		(self.selected, self.previewing) = open;
+		result
 	}
 	pub fn start_choose(
 		&mut self,
@@ -751,20 +785,22 @@ impl Uploads {
 		});
 	}
 	/// Composer navigation: parks the files staged in the conversation being left and restores
-	/// the destination's, so a selection only ever returns to the scope it was staged in.
-	/// Work still in flight is cancelled as before. `keep` rejects parked conversations
-	/// that are gone or no longer viewable.
+	/// the destination's, so a selection only ever returns to the scope it was staged in, like
+	/// that conversation's text draft. Work still in flight is cancelled as before.
+	/// Staged files live as long as the session `generation`. `keep` rejects conversations that
+	/// are gone or no longer viewable; it is only consulted while `connected`, because a
+	/// Gateway reconnect leaves permissions momentarily unknown and must not discard drafts.
 	pub fn follow_conversation(
 		&mut self,
 		generation: u64,
 		channel: Option<Id>,
-		allowed: bool,
+		connected: bool,
 		keep: impl Fn(Id) -> bool,
 	) {
-		let target = channel.filter(|_| allowed).map(|id| (generation, id));
+		let target = channel.map(|id| (generation, id));
+		let retained = |scope: (u64, Id)| scope.0 == generation && (!connected || keep(scope.1));
 		if !self.parked.is_empty() {
-			self.parked
-				.retain(|parked| allowed && parked.scope.0 == generation && keep(parked.scope.1));
+			self.parked.retain(|parked| retained(parked.scope));
 		}
 		if self.scope == target {
 			return;
@@ -774,7 +810,7 @@ impl Uploads {
 			.and_then(|target| self.parked.iter().position(|parked| parked.scope == target))
 			.map(|index| self.parked.remove(index));
 		if let Some(scope) = self.scope {
-			if allowed && scope.0 == generation && keep(scope.1) && !self.selected.is_empty() {
+			if retained(scope) && !self.selected.is_empty() {
 				self.park(scope);
 			}
 			self.remove();
@@ -1423,7 +1459,7 @@ mod tests {
 	}
 
 	#[test]
-	fn parked_files_drop_on_session_change_disconnect_or_lost_access() {
+	fn parked_files_survive_a_disconnect_but_drop_on_session_change_or_lost_access() {
 		let (a, b) = (Id(1), Id(2));
 		let mut uploads = Uploads::default();
 		stage(&mut uploads, 1, a, 3);
@@ -1432,9 +1468,20 @@ mod tests {
 		assert!(uploads.files().is_empty() && uploads.parked.is_empty());
 		assert!(uploads.take_source(2, a).is_none());
 
+		// Regression: a Gateway reconnect dropped every staged file, open or parked. Drafts
+		// survive it like text drafts; access is judged again once connected.
 		stage(&mut uploads, 2, a, 3);
 		uploads.follow_conversation(2, Some(b), true, |_| true);
-		uploads.follow_conversation(2, Some(b), false, |_| true);
+		stage(&mut uploads, 2, b, 4);
+		uploads.follow_conversation(2, Some(b), false, |_| false);
+		uploads.revalidate_scope(2, Some(b), true);
+		assert_eq!(uploads.files(), [("message.txt".to_owned(), 4)]);
+		uploads.follow_conversation(2, Some(a), false, |_| false);
+		assert_eq!(uploads.files(), [("message.txt".to_owned(), 3)]);
+		uploads.follow_conversation(2, Some(a), true, |_| true);
+		uploads.remove();
+		uploads.follow_conversation(2, Some(b), true, |_| true);
+		assert_eq!(uploads.take_source(2, b).unwrap().len(), 1);
 		assert!(uploads.parked.is_empty());
 
 		stage(&mut uploads, 2, a, 3);
@@ -1447,6 +1494,35 @@ mod tests {
 		uploads.forget_parked();
 		uploads.follow_conversation(2, Some(a), true, |_| true);
 		assert!(uploads.files().is_empty() && !uploads.has_unsent());
+	}
+
+	/// Regression: a paste still being read when the user left was discarded.
+	#[test]
+	fn a_paste_finishing_after_leaving_joins_its_own_conversation() {
+		let runtime = tokio::runtime::Runtime::new().unwrap();
+		let context = egui::Context::default();
+		let (a, b) = (Id(1), Id(2));
+		let sizes = |uploads: &Uploads| {
+			uploads
+				.files()
+				.iter()
+				.map(|(_, size)| *size)
+				.collect::<Vec<_>>()
+		};
+		let mut uploads = Uploads::default();
+		stage(&mut uploads, 1, b, 4);
+		for bytes in [3, 5] {
+			let pasted = Source::pasted_text("x".repeat(bytes)).unwrap();
+			uploads
+				.select_pasted(1, a, vec![pasted], runtime.handle(), &context)
+				.unwrap();
+		}
+		// The open conversation keeps only its own file; both pastes wait in their own draft.
+		assert_eq!(sizes(&uploads), [4]);
+		uploads.follow_conversation(1, Some(a), true, |_| true);
+		assert_eq!(sizes(&uploads), [3, 5]);
+		uploads.follow_conversation(1, Some(b), true, |_| true);
+		assert_eq!(sizes(&uploads), [4]);
 	}
 
 	#[test]
