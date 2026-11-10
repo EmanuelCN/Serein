@@ -2261,8 +2261,11 @@ impl MessagingUi {
 		}
 		.on_hover_text(&hint)
 		.on_disabled_hover_text(hint);
+		// Starting a call rings the conversation; joining one already in progress does not
+		// ring everyone again.
 		if response.clicked() {
-			self.request_call(state, channel, !guild && !incoming, commands);
+			let ring = !guild && !incoming && !state.voice.has_dm_call(channel);
+			self.request_call(state, channel, ring, commands);
 		}
 		response
 	}
@@ -3867,20 +3870,30 @@ impl MessagingUi {
 											)
 											.truncate(),
 										);
-										ui.label(
-											RichText::new(crate::i18n::translate_if_key(
-												if incoming {
-													unavailable
-														.unwrap_or("voice-call-bar-incoming-call")
-												} else if !state.gateway_connected {
-													"voice-call-bar-reconnect-to-refresh-call"
-												} else {
-													"voice-call-bar-call-in-progress"
-												},
-											))
-											.size(13.0)
-											.color(colors.muted),
-										);
+										let connected = state.voice.dm_participants(channel);
+										if !incoming
+											&& state.gateway_connected && !connected.is_empty()
+										{
+											self.connected_participants(
+												ui, state, channel, connected,
+											);
+										} else {
+											ui.label(
+												RichText::new(crate::i18n::translate_if_key(
+													if incoming {
+														unavailable.unwrap_or(
+															"voice-call-bar-incoming-call",
+														)
+													} else if !state.gateway_connected {
+														"voice-call-bar-reconnect-to-refresh-call"
+													} else {
+														"voice-call-bar-call-in-progress"
+													},
+												))
+												.size(13.0)
+												.color(colors.muted),
+											);
+										}
 									});
 								},
 							);
@@ -3888,6 +3901,51 @@ impl MessagingUi {
 					});
 				});
 		}
+	}
+
+	/// Who is actually in a private or group call this account has not joined: their avatars
+	/// and how many, from the call's voice states rather than the conversation's members.
+	fn connected_participants(
+		&mut self,
+		ui: &mut egui::Ui,
+		state: &State,
+		channel: Id,
+		connected: &[Participant],
+	) {
+		const SHOWN: usize = 5;
+		let colors = design::palette(ui);
+		let names: Vec<&str> = connected
+			.iter()
+			.map(|participant| {
+				participant_user(state, channel, participant.user)
+					.map_or("Unknown user", |user| state.user_display_name(user))
+			})
+			.collect();
+		ui.horizontal(|ui| {
+			ui.spacing_mut().item_spacing.x = 2.0;
+			for participant in connected.iter().take(SHOWN) {
+				match participant_user(state, channel, participant.user) {
+					Some(user) => {
+						self.avatars.show(ui, user, 18.0, state.demo);
+					}
+					None => {
+						design::avatar(ui, "?", 18.0);
+					}
+				}
+			}
+			ui.add_space(4.0);
+			ui.label(
+				RichText::new(crate::i18n::translate_count(
+					"voice-call-bar-connected-count",
+					connected.len(),
+					&[],
+				))
+				.size(13.0)
+				.color(colors.muted),
+			);
+		})
+		.response
+		.on_hover_text(names.join(", "));
 	}
 
 	/// Call details drawn inside the account card while connected: Discord's "Voice
@@ -4694,8 +4752,10 @@ fn stage_participants(state: &State, channel: Id) -> Vec<RosterEntry> {
 			.cloned()
 			.collect()
 	};
+	// A one-to-one call keeps a ringing seat for the other person, as in Discord. A group
+	// call shows only who is connected: being rung is not being in the call.
 	if call.is_some_and(|call| call.guild.is_none() && call.phase != Phase::Failed)
-		&& let Some(conversation) = state.channel(channel)
+		&& let Some(conversation) = state.channel(channel).filter(|c| c.kind == 1)
 	{
 		for user in conversation
 			.recipients
@@ -5746,6 +5806,117 @@ mod tests {
 		view.apply_ring_request(&mut state, &mut commands);
 		assert!(commands.is_empty());
 		assert!(view.ring_request.is_none());
+	}
+
+	/// Regression: a group call looked as if every member were in it. Only the members
+	/// Discord reports connected are shown, whether or not this account has joined, and
+	/// joining an ongoing call does not ring everyone again.
+	#[test]
+	fn group_calls_show_only_connected_members() {
+		fn texts(shape: &egui::Shape, out: &mut Vec<String>) {
+			match shape {
+				egui::Shape::Text(text) => out.push(text.galley.job.text.clone()),
+				egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| texts(shape, out)),
+				_ => {}
+			}
+		}
+		let member = |user| client_core::voice::Participant {
+			user: Id(user),
+			muted: false,
+			deafened: false,
+			server_muted: false,
+			server_deafened: false,
+			video: false,
+			streaming: false,
+		};
+		// A five-person group: this account and members 2 to 5.
+		let mut state = test_support::existing_call_demo_state();
+		state.demo = false;
+		state.gateway_connected = true;
+		let group = state.channels.iter_mut().find(|c| c.id == Id(22)).unwrap();
+		group.kind = 3;
+		let template = group.recipients[0].clone();
+		group.recipients = (2..=5)
+			.map(|id| model::User {
+				id: Id(id),
+				..template.clone()
+			})
+			.collect();
+		state.invalidate_navigation();
+		// Members 2 and 3 are in the call; Discord is still ringing 4 and 5.
+		state.apply_voice(client_core::voice::Event::Call {
+			channel: Id(22),
+			ringing: Some(vec![Id(4), Id(5)]),
+			participants: Some(vec![member(2), member(3)]),
+			unavailable: false,
+		});
+		assert_eq!(state.voice.incoming, None);
+		let ctx = egui::Context::default();
+		let mut messaging = MessagingUi {
+			voice_available: true,
+			..Default::default()
+		};
+		let mut text = Vec::new();
+		for _ in 0..2 {
+			let output = ctx.run_ui(Default::default(), |ui| {
+				messaging.call_bar(ui, &mut state, &mut vec![], None);
+			});
+			text.clear();
+			for clipped in &output.shapes {
+				texts(&clipped.shape, &mut text);
+			}
+			output.drop_without_applying_deltas();
+		}
+		// Fluent isolates the number with directional marks.
+		assert!(
+			text.iter()
+				.any(|t| t.replace(['\u{2068}', '\u{2069}'], "") == "2 people in the call"),
+			"{text:?}"
+		);
+		assert!(!text.iter().any(|t| t == "Call in progress"));
+		// The header's Join call joins without ringing the group again.
+		let mut sent = Vec::new();
+		for (pressed, moved) in [(None, true), (Some(true), false), (Some(false), false)] {
+			let mut events = Vec::new();
+			if moved {
+				events.push(egui::Event::PointerMoved(egui::pos2(16.0, 16.0)));
+			}
+			if let Some(pressed) = pressed {
+				events.push(egui::Event::PointerButton {
+					pos: egui::pos2(16.0, 16.0),
+					button: egui::PointerButton::Primary,
+					pressed,
+					modifiers: egui::Modifiers::NONE,
+				});
+			}
+			ctx.run_ui(
+				egui::RawInput {
+					events,
+					..Default::default()
+				},
+				|ui| {
+					messaging.call_button(ui, &mut state, Id(22), &mut sent);
+				},
+			)
+			.drop_without_applying_deltas();
+		}
+		assert!(matches!(
+			sent.as_slice(),
+			[Command::Voice(client_core::voice::Command::Join {
+				channel: Id(22),
+				ring: false,
+				..
+			})]
+		));
+		// In the call, the stage seats this account and the two connected members only.
+		let call = state.voice.active.as_mut().unwrap();
+		call.phase = Phase::Connected;
+		call.participants = vec![member(1), member(2), member(3)];
+		let seated: Vec<_> = stage_participants(&state, Id(22))
+			.iter()
+			.map(|entry| entry.participant.user)
+			.collect();
+		assert_eq!(seated, [Id(1), Id(2), Id(3)]);
 	}
 
 	#[test]
