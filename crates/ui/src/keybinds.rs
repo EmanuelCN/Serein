@@ -70,6 +70,14 @@ pub(super) fn show(
 	);
 	section(
 		ui,
+		"Application",
+		"Restart Serein. Unsent work asks for confirmation first.",
+		&[KeybindAction::RestartApp],
+		bindings,
+		capturing,
+	);
+	section(
+		ui,
 		"Development",
 		"Copy build and environment information for an issue report.",
 		&[KeybindAction::CopyIssueDiagnostics],

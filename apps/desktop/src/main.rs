@@ -48,6 +48,7 @@ mod reading_settings;
 mod registered_games;
 #[cfg(feature = "demo")]
 mod rendering_demo;
+mod restart;
 #[cfg(target_os = "linux")]
 mod round_corners;
 mod screen;
@@ -402,11 +403,13 @@ fn main() -> eframe::Result {
 	let mut instance = if demo {
 		platform::single_instance::Instance::default()
 	} else {
-		match platform::single_instance::claim() {
-			platform::single_instance::Launch::Primary(instance) => instance,
-			platform::single_instance::Launch::Forwarded => return Ok(()),
+		match restart::claim() {
+			Some(instance) => instance,
+			None => return Ok(()),
 		}
 	};
+	let restart_on_exit = Arc::new(std::sync::atomic::AtomicBool::new(false));
+	let restart_flag = restart_on_exit.clone();
 	let frame_sample = std::env::args()
 		.find_map(|arg| arg.strip_prefix("--demo-frame-sample").map(str::to_owned))
 		.map(|value| {
@@ -631,6 +634,7 @@ fn main() -> eframe::Result {
 				move || wake.request_repaint(),
 			);
 			desktop.instance = instance;
+			desktop.restart_on_exit = restart_flag;
 			if let Some(geometry) = window_geometry {
 				app_settings::restore_window_geometry(&desktop.window, geometry);
 				desktop.maximize_after_show =
@@ -647,6 +651,10 @@ fn main() -> eframe::Result {
 	// NVIDIA's exit handlers crash or deadlock if the process exits during that teardown.
 	if !discord_voice::wait_for_media_threads(std::time::Duration::from_secs(5)) {
 		eprintln!("Screen or camera capture was still closing when Serein exited.");
+	}
+	// The app, its windows and the single-instance claim are gone; start the replacement.
+	if result.is_ok() && restart_on_exit.load(std::sync::atomic::Ordering::Acquire) {
+		restart::relaunch();
 	}
 	result
 }
@@ -1093,6 +1101,8 @@ struct Desktop {
 	app_menu: Option<(platform::app_menu::AppMenu, ui::i18n::Language)>,
 	/// Show requests from later launches and macOS Dock reopens.
 	instance: platform::single_instance::Instance,
+	/// Set while a requested restart is closing the app; `main` relaunches after a real exit.
+	restart_on_exit: Arc<std::sync::atomic::AtomicBool>,
 	/// `--demo-reply`: keeps two synthetic typists active on the selected fixture channel.
 	#[cfg(feature = "demo")]
 	demo_typing: bool,
@@ -2457,6 +2467,7 @@ impl Desktop {
 			#[cfg(target_os = "macos")]
 			app_menu,
 			instance: Default::default(),
+			restart_on_exit: Default::default(),
 			hotkeys,
 			system_theme,
 			tray_error: None,
@@ -5792,6 +5803,16 @@ impl eframe::App for Desktop {
 			// Installing needs a real exit, so this close must not stop at the tray.
 			self.tray_window.quit(ctx);
 		}
+		// Restart Serein (Ctrl+R): a real exit through the normal close gate, so unsent work
+		// still asks first, then `main` relaunches. Offline fixtures never restart.
+		if std::mem::take(&mut self.messaging.restart_requested)
+			&& !self.fixture_only
+			&& !self.state.demo
+		{
+			self.restart_on_exit
+				.store(true, std::sync::atomic::Ordering::Release);
+			self.tray_window.quit(ctx);
+		}
 		self.state.expire_interaction(std::time::Instant::now());
 		if self.state.interactions.busy() {
 			ctx.request_repaint_after(Duration::from_millis(250));
@@ -7081,6 +7102,8 @@ impl eframe::App for Desktop {
 				}
 				Some(ui::dialog::Choice::Cancelled) => {
 					self.updater.cancel_restart();
+					self.restart_on_exit
+						.store(false, std::sync::atomic::Ordering::Release);
 					self.confirming_close = false;
 					self.tray_window.cancel_quit();
 					self.extension_close_pending = false;

@@ -450,6 +450,8 @@ pub struct MessagingUi {
 	menu_paste: Option<egui::Id>,
 	pasted_text_frame: Option<u64>,
 	pub remove_attachment_requested: bool,
+	/// The Restart Serein binding was pressed; the desktop restarts through its close path.
+	pub restart_requested: bool,
 	pub cancel_upload_requested: bool,
 	pub upload_busy: bool,
 	/// New attachments cannot be selected right now. Loading files and an upload in flight
@@ -4697,6 +4699,24 @@ impl MessagingUi {
 		}) {
 			self.copy_diagnostic_info(ui.ctx());
 		}
+		// Restart follows the same rule: a plain chord yields to typing, a modified one (the
+		// Ctrl+R default) works anywhere in the window, as in Discord. Not while recording a key.
+		if self.keybind_capture.is_none()
+			&& !self.ime_active
+			&& ui.input(|input| {
+				input.focused
+					&& !input
+						.events
+						.iter()
+						.any(|event| matches!(event, egui::Event::Ime(_)))
+			}) && ui.input_mut(|input| {
+			self.keybinds
+				.chords(model::KeybindAction::RestartApp)
+				.filter(|chord| diagnostics_allowed(chord))
+				.any(|chord| crate::keybinds::pressed_exact(input, chord))
+		}) {
+			self.restart_requested = true;
+		}
 		crate::i18n::set_current(self.language);
 		let language = self.language;
 		if let Some(status) = state.take_user_action_status() {
@@ -7025,6 +7045,44 @@ mod composer_tests {
 			repeat: false,
 			modifiers: egui::Modifiers::NONE,
 		}
+	}
+
+	/// Ctrl+R asks the desktop to restart from anywhere in the window, even while writing, but
+	/// not while the user is recording a new binding.
+	#[test]
+	fn ctrl_r_requests_a_restart_except_while_recording_a_binding() {
+		let restart = || egui::Event::Key {
+			key: egui::Key::R,
+			physical_key: None,
+			pressed: true,
+			repeat: false,
+			modifiers: egui::Modifiers::COMMAND,
+		};
+		let ctx = egui::Context::default();
+		let mut state = edit_state();
+		let mut view = MessagingUi {
+			focus_switched_composer: true,
+			..Default::default()
+		};
+		let mut frame = |view: &mut MessagingUi, events| {
+			ctx.run_ui(
+				egui::RawInput {
+					focused: true,
+					events,
+					..Default::default()
+				},
+				|ui| drop(view.show(ui, &mut state)),
+			)
+			.drop_without_applying_deltas();
+		};
+		frame(&mut view, vec![]);
+		frame(&mut view, vec![restart()]);
+		assert!(std::mem::take(&mut view.restart_requested));
+		view.keybind_capture = Some(keybinds::CaptureTarget::BuiltIn(
+			model::KeybindAction::RestartApp,
+		));
+		frame(&mut view, vec![restart()]);
+		assert!(!view.restart_requested);
 	}
 
 	/// Regression: Ctrl+E inserted inline-code backticks instead of opening the emoji picker.
