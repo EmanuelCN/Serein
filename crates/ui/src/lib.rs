@@ -3767,20 +3767,44 @@ impl MessagingUi {
                                     .color(if count_before >= max_content { colors.danger } else { colors.muted }),
                             );
                         }
-                        // The Emoji Picker binding (Ctrl+E by default) works while writing or while
-                        // the picker has focus. It is matched exactly and before text formatting,
-                        // so Ctrl+E never also inserts inline-code backticks.
+                        // The Emoji Picker binding (Ctrl+E by default), as in Discord, works from
+                        // anywhere in the conversation: while writing, while the picker has focus,
+                        // or while nothing else takes typing. Another text field (search, a
+                        // dialog) keeps its own keys. It is matched exactly and before text
+                        // formatting, so Ctrl+E never also inserts inline-code backticks.
+                        let composer_focused = ctx.memory(|m| m.has_focus(composer_id));
                         if keyboard_enabled
                             && !application_command
                             && !self.ime_active
                             && !ime_this_frame
-                            && (self.emoji_picker.is_open() || ctx.memory(|m| m.has_focus(composer_id)))
+                            && (self.emoji_picker.is_open()
+                                || composer_focused
+                                || !ctx.egui_wants_keyboard_input())
                             && ctx.input_mut(|input| {
                                 self.keybinds
                                     .chords(model::KeybindAction::EmojiPicker)
                                     .any(|chord| crate::keybinds::pressed_exact(input, chord))
                             })
                         {
+                            if self.emoji_picker.is_open() {
+                                // Closing returns to the draft, like a pick does.
+                                self.refocus_composer = true;
+                                ctx.request_repaint();
+                            } else if !composer_focused {
+                                // Select this conversation's composer first, caret after the
+                                // draft, so the picked emoji lands there; the picker then takes
+                                // focus for its search field.
+                                ctx.memory_mut(|m| m.request_focus(composer_id));
+                                let mut edit_state =
+                                    egui::text_edit::TextEditState::load(ctx, composer_id).unwrap_or_default();
+                                if edit_state.cursor.char_range().is_none() {
+                                    let draft = state.drafts.get(&channel).map_or("", String::as_str);
+                                    edit_state.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+                                        egui::text::CCursor::end_of_str(draft),
+                                    )));
+                                    edit_state.store(ctx, composer_id);
+                                }
+                            }
                             self.emoji_picker.toggle_emoji();
                         }
                         let pick = ui
@@ -7025,6 +7049,64 @@ mod composer_tests {
 			repeat: false,
 			modifiers: egui::Modifiers::NONE,
 		}
+	}
+
+	/// Regression: Ctrl+E did nothing unless the draft already had focus. As in Discord it
+	/// selects the composer and opens the picker from anywhere, while a focused search field
+	/// keeps its own keys.
+	#[test]
+	fn ctrl_e_selects_the_composer_and_opens_the_picker_from_anywhere() {
+		let ctrl_e = egui::Event::Key {
+			key: egui::Key::E,
+			physical_key: None,
+			pressed: true,
+			repeat: false,
+			modifiers: egui::Modifiers::COMMAND,
+		};
+		let ctx = egui::Context::default();
+		let mut view = MessagingUi::default();
+		let mut state = edit_state();
+		let channel = state.selected.unwrap();
+		state.drafts.insert(channel, "hello".into());
+		let search = egui::Id::unique("synthetic-search");
+		let mut query = String::new();
+		let mut frame = |view: &mut MessagingUi, state: &mut State, events, search_focus| {
+			ctx.run_ui(
+				egui::RawInput {
+					events,
+					..Default::default()
+				},
+				|ui| {
+					let field = ui.add(egui::TextEdit::singleline(&mut query).id(search));
+					if search_focus {
+						field.request_focus();
+					}
+					view.composer(ui, state, channel, &ctx, &mut vec![]);
+				},
+			)
+			.drop_without_applying_deltas();
+			// Each event is a tap; without this a later press would read as a key repeat.
+			ctx.input_mut(|i| i.keys_down.clear());
+		};
+		// Another text field has focus: it keeps Ctrl+E.
+		frame(&mut view, &mut state, vec![], true);
+		frame(&mut view, &mut state, vec![ctrl_e.clone()], true);
+		assert!(!view.emoji_picker.is_open());
+		// Browsing with nothing focused: the picker opens for this conversation's draft.
+		ctx.memory_mut(|m| m.surrender_focus(search));
+		frame(&mut view, &mut state, vec![], false);
+		frame(&mut view, &mut state, vec![ctrl_e.clone()], false);
+		assert!(view.emoji_picker.is_open());
+		assert_eq!(state.drafts[&channel], "hello");
+		// Closing it with the shortcut hands focus to the draft.
+		frame(&mut view, &mut state, vec![ctrl_e], false);
+		assert!(!view.emoji_picker.is_open());
+		frame(&mut view, &mut state, vec![], false);
+		assert!(
+			ctx.memory(|m| m.focused())
+				.is_some_and(|focused| focused != search)
+		);
+		assert_eq!(state.drafts[&channel], "hello");
 	}
 
 	/// Regression: Ctrl+E inserted inline-code backticks instead of opening the emoji picker.
