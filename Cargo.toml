@@ -57,7 +57,7 @@ unsafe_code = "forbid"
 # Fat LTO inlines across the bundled C libraries (libopus, sqlite, sonora) and drops their
 # unused code; stripping the symbol table removes the 7-8 MB `__LINKEDIT`/`.symtab` from the
 # shipped binary. Line tables still land in the split debug file for symbolicating crashes.
-lto = "fat"
+lto = "thin"
 codegen-units = 1
 strip = "symbols"
 debug = "line-tables-only"
