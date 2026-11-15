@@ -393,6 +393,7 @@ mod tests {
 				member_list_id: None,
 				tags: None,
 				message_count: None,
+				user_limit: None,
 			}],
 			..Default::default()
 		};

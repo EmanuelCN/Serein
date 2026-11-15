@@ -1096,7 +1096,9 @@ impl MessagingUi {
 			Some((_, Phase::Failed)) => {
 				self.stream_preview_watch = None;
 			}
-			Some((_, _)) => { open_stage = navigate; }
+			Some((_, _)) => {
+				open_stage = navigate;
+			}
 		}
 		// Watching from the sidebar preview must bring its stage into view instead of leaving
 		// the user reading another conversation while the share starts behind it.
@@ -6993,6 +6995,15 @@ mod tests {
 		assert_eq!(messaging.stream_preview_watch, Some((Id(25), Id(3))));
 		assert!(messaging.stream_preview_navigate);
 		let mut commands = Vec::new();
+		let before = state.selected;
+		messaging.apply_stream_preview_watch(&mut state, &mut commands);
+		assert_eq!(state.selected, before, "a refused join must not navigate");
+		assert!(commands.is_empty() && messaging.stream_preview_watch.is_none());
+		// Exercise admission with synthetic state; emitted commands are never executed.
+		state.demo = false;
+		state.gateway_connected = true;
+		messaging.voice_available = true;
+		messaging.open_stream(Id(25), Id(3));
 		messaging.apply_stream_preview_watch(&mut state, &mut commands);
 		assert_eq!(state.selected, Some(Id(25)));
 		assert!(!messaging.stream_preview_navigate);
