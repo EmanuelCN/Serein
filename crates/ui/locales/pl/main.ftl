@@ -892,6 +892,8 @@ emoji-picker-show-insert-an-emoji = Wstaw emoji
 emoji-picker-show-reaction-add-reaction = Dodaj reakcję
 # Context: show
 emoji-picker-show-send-a-gif = Wyślij GIF-a
+
+emoji-picker-show-send-a-sticker = Wyślij naklejkę
 # Context: unicode_button_with
 emoji-picker-unicode-button-with-choose-emoji = Wybierz emoji
 # Context: unicode_button_with

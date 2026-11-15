@@ -391,7 +391,9 @@ normal-account discovery, execution and application responses remain unverified.
 
 ## Stickers - September 20, 2026
 
-The composer media picker has a Stickers tab with local name/tag/source search,
+The composer has a dedicated sticker icon beside GIF that opens the Stickers tab directly.
+The media buttons share one popout, switch tabs in place and toggle closed on a second click.
+The Stickers tab has local name/tag/source search,
 collapsible server and standard-pack groups, a section rail, session-only recent
 choices, and a hovered preview. Clicking a sticker sends it as a separate message
 and preserves the typed draft. Reply references, pending/failed delivery and the

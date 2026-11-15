@@ -893,6 +893,8 @@ emoji-picker-show-insert-an-emoji = 絵文字を挿入する
 emoji-picker-show-reaction-add-reaction = リアクションを追加
 # Context: show
 emoji-picker-show-send-a-gif = GIFを送信する
+
+emoji-picker-show-send-a-sticker = スタンプを送信
 # Context: unicode_button_with
 emoji-picker-unicode-button-with-choose-emoji = 絵文字を選択してください
 # Context: unicode_button_with

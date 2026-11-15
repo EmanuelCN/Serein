@@ -92,6 +92,7 @@ pub enum Icon {
 	ArrowUp,
 	Check,
 	Gif,
+	Sticker,
 	Star,
 	StarFill,
 	Fire,
@@ -136,7 +137,7 @@ pub enum Icon {
 
 impl Icon {
 	/// Canonical atlas cells; Forward reuses the mirrored Reply cell.
-	pub const ALL: [Icon; 111] = [
+	pub const ALL: [Icon; 112] = [
 		Icon::ChevronDown,
 		Icon::ChevronRight,
 		Icon::Gear,
@@ -211,6 +212,7 @@ impl Icon {
 		Icon::ArrowUp,
 		Icon::Check,
 		Icon::Gif,
+		Icon::Sticker,
 		Icon::Star,
 		Icon::StarFill,
 		Icon::Fire,
@@ -329,6 +331,7 @@ impl Icon {
 			Icon::ArrowUp => "arrow-up",
 			Icon::Check => "check",
 			Icon::Gif => "gif",
+			Icon::Sticker => "sticker",
 			Icon::Star => "star",
 			Icon::StarFill => "star-fill",
 			Icon::Fire => "fire",

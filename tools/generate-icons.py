@@ -128,6 +128,7 @@ ICONS = [
     ("clipboard-text", "bold/clipboard-text-bold.svg", "3d1f047a9ea53283cada888642cc9427e3ec7ac766beeefee19581454b4b26b4"),
     ("selection-all", "bold/selection-all-bold.svg", "a5db79d398382ba9c9bf0abe75290e46cf11c41464be439b66c8e3ee30a716a3"),
     ("music-notes", "fill/music-notes-fill.svg", "ddfa03bf39856870a4898b830525136583179dc019aa0ab8689eb5b7a65bc50d"),
+    ("sticker", "fill/sticker-fill.svg", "7b82c8037cc61e8c740821df59bb1df622ad83435f251383974e6c04285e83bb"),
 ]
 LICENSE_SHA256 = "ddbe6082ec3cf979db47e5af549d2849c5d6182b3e005ef91ce1dbb9eb122f11"
 
@@ -199,7 +200,8 @@ def main():
     for cell, (name, asset, sha256, simple) in enumerate(sources):
         local = asset.startswith("repo:")
         if local:
-            svg = (root / asset.removeprefix("repo:")).read_bytes()
+            # Git checkouts may use CRLF on Windows; pin the canonical repository bytes.
+            svg = (root / asset.removeprefix("repo:")).read_bytes().replace(b"\r\n", b"\n")
         else:
             svg = fetch(asset, SIMPLE_BASE) if simple else fetch(f"assets/{asset}")
         digest = hashlib.sha256(svg).hexdigest()
@@ -245,7 +247,7 @@ def main():
         subprocess.run(["oxipng", "-o", "max", "--strip", "all", "-q", destination / "atlas.png"], check=True)
     else:
         print("oxipng not found; atlas.png left at resvg compression", file=sys.stderr)
-    (destination / "index.tsv").write_text("".join(f"{name}\t{cell}\n" for name, cell in index), encoding="utf-8")
+    (destination / "index.tsv").write_text("".join(f"{name}\t{cell}\n" for name, cell in index), encoding="utf-8", newline="\n")
     (destination / "LICENSE").write_bytes(license_text)
     (destination / "LICENSE-SIMPLE-ICONS").write_bytes(simple_license)
     print(f"{len(sources)} icons; {width}x{height}; atlas {(destination / 'atlas.png').stat().st_size} bytes")

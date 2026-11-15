@@ -2101,3 +2101,18 @@ Raw samples and measurement boundaries are in
 Release/package size, live Discord/network latency, GPU frame latency, native idle CPU and process
 RSS were not measured. No account, calls, microphone, network service adapter or telemetry was used
 by the synthetic workloads/captures.
+
+## Composer sticker button - November 15, 2026
+
+Compared with source-identical baseline `9739a9ca` / `08afff42`, the dedicated sticker button
+adds one atlas cell (111 to 112), retaining the existing 512×896 texture dimensions and picker.
+The regenerated encoded atlas grows from 27,327 to 54,792 bytes; this includes changing PNG
+compression from oxipng to lossless zlib level 9, not just the additional glyph. A same-profile,
+pinned-toolchain debug demo executable grows from 165,783,552 to 165,841,408 bytes
+(+57,856 bytes, +0.035%). These are single artifact-size comparisons, not runtime timings.
+There are no new runtime dependencies or animation/cache changes.
+
+Native CPU, RSS, frame latency and startup time were not measured after the owner stopped
+desktop automation. Release/package builds were excluded by request.
+[Reproduction, checks and evidence limitations](pr-evidence/sticker-button/README.md)
+record the offline pointer/accessibility regression and missing native visual captures.
