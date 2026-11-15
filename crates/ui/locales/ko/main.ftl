@@ -5103,3 +5103,9 @@ moderation-delete-week = 지난 7일
 moderation-confirm-timeout = 타임아웃
 # Context: moderation
 moderation-confirm-ban = 차단
+
+# Composer and voice controls introduced by the integrated commits.
+emoji-picker-show-send-a-sticker = 스티커 보내기
+settings-click-to-join-voice = 한 번 클릭하여 음성 채널에 참가
+settings-click-to-join-voice-description = 채널 목록에서 음성 채널을 클릭하면 채널을 열기만 하는 대신 바로 참가합니다. 두 번 클릭하면 항상 참가합니다.
+voice-call-bar-connected-count = { $count }명 참가 중

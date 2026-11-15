@@ -898,6 +898,8 @@ emoji-picker-show-insert-an-emoji = Bir emoji ekleyin
 emoji-picker-show-reaction-add-reaction = Tepki ekle
 # Context: show
 emoji-picker-show-send-a-gif = GIF gönder
+
+emoji-picker-show-send-a-sticker = Çıkartma gönder
 # Context: unicode_button_with
 emoji-picker-unicode-button-with-choose-emoji = Emojiyi seç
 # Context: unicode_button_with

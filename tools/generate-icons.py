@@ -130,6 +130,7 @@ ICONS = [
     ("selection-all", "bold/selection-all-bold.svg", "a5db79d398382ba9c9bf0abe75290e46cf11c41464be439b66c8e3ee30a716a3"),
     ("music-notes", "fill/music-notes-fill.svg", "ddfa03bf39856870a4898b830525136583179dc019aa0ab8689eb5b7a65bc50d"),
     ("monitor-x", "repo:assets/icons/monitor-x.svg", "5850e9e31daefe53ac6e117abd690e5171c055b40cbdd9337948bd2fbbfc11a9"),
+    ("sticker", "fill/sticker-fill.svg", "7b82c8037cc61e8c740821df59bb1df622ad83435f251383974e6c04285e83bb"),
 ]
 LICENSE_SHA256 = "ddbe6082ec3cf979db47e5af549d2849c5d6182b3e005ef91ce1dbb9eb122f11"
 
@@ -201,6 +202,7 @@ def main():
     for cell, (name, asset, sha256, simple) in enumerate(sources):
         local = asset.startswith("repo:")
         if local:
+            # Git checkouts may use CRLF on Windows; pin the canonical repository bytes.
             svg = (root / asset.removeprefix("repo:")).read_bytes().replace(b"\r\n", b"\n")
         else:
             svg = fetch(asset, SIMPLE_BASE) if simple else fetch(f"assets/{asset}")

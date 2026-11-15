@@ -910,6 +910,8 @@ emoji-picker-show-insert-an-emoji = 插入表情符号
 emoji-picker-show-reaction-add-reaction = 加入反应
 # Context: show
 emoji-picker-show-send-a-gif = 传送 GIF
+
+emoji-picker-show-send-a-sticker = 发送贴纸
 # Context: unicode_button_with
 emoji-picker-unicode-button-with-choose-emoji = 选择表情符号
 # Context: unicode_button_with

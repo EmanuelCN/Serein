@@ -749,7 +749,7 @@ impl Picker {
 			)
 		});
 		if let Some(Pick::React(message, emoji)) =
-			self.popup(ui, state, channel, avatars, commands, &trigger, None)
+			self.popup(ui, state, channel, avatars, commands, &trigger, &[])
 			&& let Some(command) = state.prepare_reaction(message, emoji)
 		{
 			commands.push(command);
@@ -795,7 +795,7 @@ impl Picker {
 		}
 		// The emoji tab never requests GIFs or stickers, so no command can be produced.
 		let mut commands = Vec::new();
-		match self.popup(ui, state, channel, avatars, &mut commands, trigger, None) {
+		match self.popup(ui, state, channel, avatars, &mut commands, trigger, &[]) {
 			Some(Pick::Choose(emoji)) => Some(emoji),
 			_ => None,
 		}
@@ -1050,6 +1050,13 @@ impl Picker {
 			self.open && self.tab == Tab::Emoji,
 			&crate::i18n::translate("emoji-picker-show-insert-an-emoji"),
 		);
+		let sticker_trigger = crate::icons::toggle(
+			ui,
+			crate::icons::Icon::Sticker,
+			28.0,
+			self.open && self.tab == Tab::Stickers,
+			&crate::i18n::translate("emoji-picker-show-send-a-sticker"),
+		);
 		let gif_trigger = crate::icons::toggle(
 			ui,
 			crate::icons::Icon::Gif,
@@ -1057,8 +1064,13 @@ impl Picker {
 			self.open && self.tab == Tab::Gifs,
 			&crate::i18n::translate("emoji-picker-show-send-a-gif"),
 		);
-		for (response, tab) in [(&trigger, Tab::Emoji), (&gif_trigger, Tab::Gifs)] {
+		for (response, tab) in [
+			(&trigger, Tab::Emoji),
+			(&sticker_trigger, Tab::Stickers),
+			(&gif_trigger, Tab::Gifs),
+		] {
 			if response.clicked() {
+				self.reaction = None;
 				if self.open && self.tab == tab {
 					self.open = false;
 				} else {
@@ -1084,7 +1096,7 @@ impl Picker {
 			avatars,
 			commands,
 			&trigger,
-			Some(&gif_trigger),
+			&[&sticker_trigger, &gif_trigger],
 		)
 	}
 
@@ -1097,7 +1109,7 @@ impl Picker {
 		avatars: &mut Avatars,
 		commands: &mut Vec<Command>,
 		trigger: &egui::Response,
-		gif_trigger: Option<&egui::Response>,
+		extra_triggers: &[&egui::Response],
 	) -> Option<Pick> {
 		if ui.is_enabled()
 			&& ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
@@ -2062,7 +2074,9 @@ impl Picker {
 				&& i.pointer.interact_pos().is_some_and(|pos| {
 					!area.response.rect.contains(pos)
 						&& !trigger.rect.contains(pos)
-						&& gif_trigger.is_none_or(|trigger| !trigger.rect.contains(pos))
+						&& extra_triggers
+							.iter()
+							.all(|trigger| !trigger.rect.contains(pos))
 				})
 		});
 		// Shift keeps the popout open for another emoji or reaction, like Discord.
@@ -3315,6 +3329,121 @@ mod tests {
 			}
 		}
 		assert!(selected && !picker.open);
+	}
+
+	#[test]
+	fn composer_sticker_button_switches_tabs_without_dismissing_on_press() {
+		let ctx = egui::Context::default();
+		ctx.enable_accesskit();
+		crate::emoji::install(&ctx).unwrap();
+		let mut state = test_support::demo_state();
+		test_support::seed_stickers(&mut state);
+		state.gifs.sync_attempted = true;
+		let channel = state.selected.unwrap();
+		state.drafts.insert(channel, "Keep my draft".into());
+		let mut picker = Picker::default();
+		let mut avatars = Avatars::default();
+		let frame = |picker: &mut Picker, state: &mut State, avatars: &mut Avatars, events| {
+			let mut selected = None;
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(900.0, 700.0),
+					)),
+					events,
+					..Default::default()
+				},
+				|ui| {
+					ui.with_layout(egui::Layout::bottom_up(egui::Align::RIGHT), |ui| {
+						ui.horizontal(|ui| {
+							selected = picker.show(ui, state, channel, avatars, &mut Vec::new());
+						});
+					});
+				},
+			);
+			assert!(
+				selected.is_none(),
+				"opening and switching pickers must not send an item"
+			);
+			let buttons: Vec<_> = output
+				.platform_output
+				.accesskit_update
+				.as_ref()
+				.unwrap()
+				.nodes
+				.iter()
+				.filter_map(|(_, node)| {
+					let bounds = node.bounds()?;
+					Some((
+						node.label()?.to_owned(),
+						egui::pos2(
+							((bounds.x0 + bounds.x1) / 2.0) as f32,
+							((bounds.y0 + bounds.y1) / 2.0) as f32,
+						),
+					))
+				})
+				.collect();
+			output.drop_without_applying_deltas();
+			buttons
+		};
+		let buttons = frame(&mut picker, &mut state, &mut avatars, vec![]);
+		let button = |key| {
+			let label = crate::i18n::translate(key);
+			buttons
+				.iter()
+				.find(|(name, _)| *name == label)
+				.expect("accessible composer button")
+				.1
+		};
+		let press = |pos, pressed| {
+			vec![
+				egui::Event::PointerMoved(pos),
+				egui::Event::PointerButton {
+					pos,
+					pressed,
+					button: egui::PointerButton::Primary,
+					modifiers: egui::Modifiers::NONE,
+				},
+			]
+		};
+		let emoji = button("emoji-picker-show-insert-an-emoji");
+		let stickers = button("emoji-picker-show-send-a-sticker");
+		let gifs = button("emoji-picker-show-send-a-gif");
+		for start in [emoji, gifs] {
+			for pressed in [true, false] {
+				frame(&mut picker, &mut state, &mut avatars, press(start, pressed));
+			}
+			assert!(picker.open && picker.tab != Tab::Stickers);
+			frame(&mut picker, &mut state, &mut avatars, press(stickers, true));
+			assert!(
+				picker.open,
+				"pressing another composer trigger must not count as an outside click"
+			);
+			frame(
+				&mut picker,
+				&mut state,
+				&mut avatars,
+				press(stickers, false),
+			);
+			assert!(picker.open && picker.tab == Tab::Stickers && picker.reaction.is_none());
+			for pressed in [true, false] {
+				frame(
+					&mut picker,
+					&mut state,
+					&mut avatars,
+					press(stickers, pressed),
+				);
+			}
+			assert!(
+				!picker.open,
+				"the same button toggles the sticker picker closed"
+			);
+		}
+		assert_eq!(
+			state.drafts.get(&channel).map(String::as_str),
+			Some("Keep my draft")
+		);
 	}
 
 	#[test]

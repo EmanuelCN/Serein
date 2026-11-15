@@ -898,6 +898,8 @@ emoji-picker-show-insert-an-emoji = Вставьте смайлик
 emoji-picker-show-reaction-add-reaction = Добавить реакцию
 # Context: show
 emoji-picker-show-send-a-gif = Отправить гифку
+
+emoji-picker-show-send-a-sticker = Отправить стикер
 # Context: unicode_button_with
 emoji-picker-unicode-button-with-choose-emoji = Выберите смайлик
 # Context: unicode_button_with

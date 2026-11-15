@@ -922,6 +922,8 @@ emoji-picker-show-insert-an-emoji = Vložte emotikon
 emoji-picker-show-reaction-add-reaction = Přidejte reakci
 # Context: show
 emoji-picker-show-send-a-gif = Pošlete GIF
+
+emoji-picker-show-send-a-sticker = Poslat nálepku
 # Context: unicode_button_with
 emoji-picker-unicode-button-with-choose-emoji = Vyberte emotikony
 # Context: unicode_button_with

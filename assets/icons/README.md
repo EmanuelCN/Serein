@@ -6,9 +6,9 @@
 fetched through the jsDelivr npm mirror on September 10, 2026. The unmodified license is
 `LICENSE` and is staged in both packages as `licenses/Phosphor-Icons-MIT.txt`.
 
-Ninety-five unmodified Phosphor `assets/fill/*.svg` and `assets/bold/*.svg` files are scaled
+Version-pinned Phosphor `assets/fill/*.svg` and `assets/bold/*.svg` files are scaled
 to 56×56 pixels, filled white, and rasterized by `resvg` 0.45.1 into one transparent PNG atlas
-with 64×64 cells (8 columns, 14 rows). `headphones-slash` is derived from `headphones-fill.svg`
+with 64×64 cells (8 columns, 15 rows). `headphones-slash` is derived from `headphones-fill.svg`
 by masking a diagonal knockout and adding a 16-unit round-capped stroke, matching the style of
 Phosphor's own `*-slash` icons. The application tints glyphs at draw time; no icon font,
 JavaScript or per-icon file is bundled.
@@ -30,11 +30,11 @@ grid), marks threads; it is rasterized with the Phosphor set and carries no upst
 (MIT, same pinned 2.1.1 package, fetched November 10, 2026) with a 16-unit round-capped X masked
 out of the screen where `monitor-arrow-up` draws its arrow, so it pairs with the share glyph.
 
-- `atlas.png`: 512×896 RGBA, 112 cells, 54,773 bytes after lossless IDAT
+- `atlas.png`: 512×960 RGBA, 113 cells, 55,754 bytes after lossless IDAT
   recompression with zlib level 9.
-  SHA-256 `92c6c8c5d574052a33d492f9b4548cb36e3092effaa6113a2d4dc416d5f301d9`.
+  SHA-256 `af952e72a801480c94c8ebd804fa0a8582134de7ff5eb02b5548fd6d109649c5`.
 - `index.tsv`: icon name, tab, zero-based cell; SHA-256
-  `e2196a2811dc476350c0a4fb2decc351d328f27c50fc80a60c302fb93ba13592`.
+  `e4c6e30761cd3a673bdcd48fc67788f62532b8ec68d1ba7eb80271470638f189`.
 
 Every upstream SVG's SHA-256 is pinned in `tools/generate-icons.py`, which refuses to build
 from mismatching files. Regenerate from the repository root:
@@ -45,8 +45,10 @@ python3 tools/generate-icons.py --resvg /tmp/resvg-tool/bin/resvg
 ```
 
 PNG compression bytes can vary with the resvg/png versions; decoded pixels and cell indices
-are deterministic. `cargo test -p ui icons` checks that every `Icon` variant maps to a
-distinct, non-blank cell and that the atlas stays below 256 KiB.
+are deterministic. The atlas remains below 256 KiB. UI picker regressions exercise the
+bundled composer glyphs; icon cells are resolved by name from the generated index.
+Repository-local SVG hashes use canonical LF line endings, and the generated index writes LF
+on every platform, so Windows checkout conversion does not invalidate source verification.
 
 The folder and open-folder glyphs are unmodified Phosphor `folder-fill.svg` and
 `folder-open-fill.svg`, fetched from the same pinned 2.1.1 package on September 11, 2026.
@@ -66,3 +68,8 @@ matches Phosphor's glyph weight in the cell. It replaced the Discord brand mark 
 occupied cell 58; no third-party application logo is bundled any more. `tools/generate-icons.py`
 pins its SHA-256 like every upstream source and rasterizes it from the repository rather than a
 package mirror.
+
+The composer sticker glyph is unmodified Phosphor `sticker-fill.svg` from the same pinned 2.1.1
+package. Its SHA-256 is `7b82c8037cc61e8c740821df59bb1df622ad83435f251383974e6c04285e83bb`.
+It shares the icon texture layers with the other composer controls. With both the newer
+stop-sharing glyph and the sticker glyph, the atlas uses fifteen rows (512×960).

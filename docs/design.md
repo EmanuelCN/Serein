@@ -101,8 +101,10 @@ The bundled faces remain upstream's hinted TrueType builds. See `assets/README.m
   that menu. Translate hands at most 2 KiB of the selected text to the ordinary external-link
   confirmation flow for Google Translate in the user's browser; Serein does not make a translation
   request itself. A bookmark is not shown because Serein has no bookmark store/service path.
-- Composer: rounded `raised` bar with attach (+), placeholder `Message #channel`, emoji picker
-  and send icons; a character counter appears within 200 characters of the limit.
+- Composer: rounded `raised` bar with attach (+), placeholder `Message #channel`, GIF, sticker,
+  emoji and send icons; a character counter appears within 200 characters of the limit.
+  The sticker button between GIF and emoji opens the Stickers tab directly. Pressing the active
+  button again closes the shared picker; switching media buttons changes tabs without dismissing it.
   Typing `@game` offers a game-search option. Selecting it leaves an `@game` filter chip
   and opens a scrollable catalog above the composer; names match case-insensitively by
   prefix and substring, including multiword names. Click, Tab or Enter inserts a game
